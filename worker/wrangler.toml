@@ -9,7 +9,7 @@ workers_dev = true
 # 公開設定（非機密）
 [vars]
 GOOGLE_CLIENT_ID = "430775966110-7kgfogemme49o7soq35ldflfhicm4p74.apps.googleusercontent.com"
-LINE_BASIC_ID = ""            # 公開版 LINE 官方帳號的 Basic ID，例如 "@abc1234x"
+LINE_BASIC_ID = "@353ktrhx"   # 公開版 LINE 官方帳號
 SITE_URL = "https://bokai01.github.io/me-inc-ledger-public/"
 CONTACT_EMAIL = "ss107419062@gmail.com"
 
