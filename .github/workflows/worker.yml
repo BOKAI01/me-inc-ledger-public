@@ -1,0 +1,48 @@
+name: Public Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - '.github/workflows/worker.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: public-worker
+  cancel-in-progress: false
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 測試
+        run: npm test
+
+      - name: 準備 KV（不存在就建立）
+        run: |
+          TITLE=LEDGER_PUBLIC_KV
+          ID=$(npx -y wrangler@4 kv namespace list | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const a=JSON.parse(s.slice(s.indexOf('[')));const n=a.find(x=>x.title==='$TITLE'||x.title.endsWith('$TITLE'));process.stdout.write(n?n.id:'')})")
+          if [ -z "$ID" ]; then
+            npx -y wrangler@4 kv namespace create "$TITLE" > /tmp/kv.txt 2>&1 || true
+            cat /tmp/kv.txt
+            ID=$(npx -y wrangler@4 kv namespace list | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const a=JSON.parse(s.slice(s.indexOf('[')));const n=a.find(x=>x.title==='$TITLE'||x.title.endsWith('$TITLE'));process.stdout.write(n?n.id:'')})")
+          fi
+          test -n "$ID"
+          sed -i "s/__KV_ID__/$ID/" wrangler.toml
+          echo "KV id: $ID"
+
+      - name: 部署到 Cloudflare
+        run: npx -y wrangler@4 deploy
