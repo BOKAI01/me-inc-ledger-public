@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>Me, Inc. 個人營運帳本</title>
+
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Me, Inc.">
+<meta name="theme-color" content="#1F3A2E">
+<meta name="mobile-web-app-capable" content="yes">
+
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" sizes="192x192" href="./icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+
+<style>
+:root{
+  --ink:#1F3A2E; --ink-2:#7A5A2C; --gold:#A87B3D; --red:#A0421C;
+  --bg:#F5F1EA; --panel:#FAF7F2; --line:#E7E2D6; --line-2:#D6D3CA;
+  --t1:#3F3B35; --t2:#78716C; --t3:#A8A29E;
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--t1);font-family:var(--sans)}
+body{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);overscroll-behavior-y:contain;-webkit-touch-callout:none}
+button{font:inherit;color:inherit;background:none;border:none;padding:0;cursor:pointer}
+input{font-family:inherit;font-size:16px}
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+input[type=number]{-moz-appearance:textfield}
+svg{display:block}
+
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.hide{display:none}
+
+/* layout */
+.app{min-height:100vh;padding-bottom:96px}
+.main{max-width:640px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:16px}
+.row{display:flex;align-items:center}
+.between{display:flex;align-items:center;justify-content:space-between}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+
+/* card */
+.card{background:#fff;border:1px solid var(--line-2);border-radius:3px;overflow:hidden}
+.card-hd{padding:10px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px}
+.card-hd.tinted{background:var(--panel)}
+.card-bd{padding:16px 20px}
+.eyebrow{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink-2);font-weight:600}
+.lbl{font-size:10px;letter-spacing:.08em;color:var(--t2)}
+.sub{font-size:11px;color:var(--t3)}
+.divider-t{border-top:1px solid var(--line);padding-top:12px;margin-top:12px}
+
+/* header */
+.hdr{position:sticky;top:0;z-index:30;background:var(--panel);border-bottom:1px solid var(--line-2)}
+.hdr-in{padding:14px 16px 12px;max-width:640px;margin:0 auto}
+.brand{font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--t2);font-weight:600}
+.h1{font-size:19px;font-weight:700;color:var(--ink);margin:0}
+.iconbtn{padding:9px;border-radius:3px}
+.iconbtn:active{background:#0000000d}
+.periodbtn{display:flex;align-items:center;gap:6px;padding:8px 10px;background:#fff;border:1px solid var(--line-2);border-radius:3px}
+.periodbtn:active{transform:scale(.97)}
+.periodbtn .rng{font-size:13px;font-weight:700;color:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* P&L */
+.big{font-size:30px;font-weight:700;font-family:var(--mono);font-variant-numeric:tabular-nums;line-height:1.1}
+.badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:3px}
+.kpi{font-size:17px;font-weight:600;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.kpi-s{font-size:14px;font-weight:600;font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* dept bars */
+.deptrow{display:block;width:100%;text-align:left;padding:6px 8px;margin:0 -8px;border-radius:3px}
+.deptrow:active{background:#00000008}
+.bar{height:6px;background:#F0EDE6;border-radius:99px;overflow:hidden}
+.bar>i{display:block;height:100%;border-radius:99px}
+
+/* chips */
+.chips{display:flex;gap:6px;overflow-x:auto;padding:2px 16px 4px;margin:0 -16px;-webkit-overflow-scrolling:touch}
+.chips::-webkit-scrollbar{display:none}
+.chip{white-space:nowrap;padding:7px 12px;font-size:12px;border-radius:3px;background:#fff;border:1px solid var(--line-2);color:var(--t2)}
+.chip.on{background:var(--ink);border-color:var(--ink);color:#fff}
+
+/* tx list */
+.tx{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:11px 16px;border-bottom:1px solid var(--line)}
+.tx:last-child{border-bottom:none}
+.tx:active{background:#00000008}
+.tx-ic{width:36px;height:36px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:18px;flex:0 0 auto}
+.tx-nm{font-size:14px;font-weight:500;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tx-mt{font-size:11px;color:var(--t3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tx-am{font-size:14px;font-weight:600;font-family:var(--mono);font-variant-numeric:tabular-nums;flex:0 0 auto}
+
+/* fab */
+.fab{position:fixed;right:20px;bottom:calc(24px + env(safe-area-inset-bottom));width:56px;height:56px;border-radius:50%;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(31,58,46,.35);z-index:40}
+.fab:active{transform:scale(.95)}
+
+/* sheet */
+.mask{position:fixed;inset:0;background:#0006;z-index:50;display:flex;align-items:flex-end;justify-content:center;animation:fade .15s ease-out}
+.sheet{background:#fff;width:100%;max-width:480px;border-radius:16px 16px 0 0;max-height:92vh;overflow-y:auto;animation:up .22s ease-out;padding-bottom:env(safe-area-inset-bottom)}
+.grab{width:44px;height:4px;background:var(--line-2);border-radius:99px;margin:10px auto 6px}
+.sheet-hd{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;border-bottom:1px solid var(--line-2)}
+.sheet-hd h3{margin:0;font-size:16px;font-weight:700;color:var(--ink)}
+.sheet-bd{padding:20px;display:flex;flex-direction:column;gap:16px}
+.sheet-ft{display:flex;gap:8px;padding:16px 20px;border-top:1px solid var(--line-2)}
+@keyframes up{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin 1s linear infinite}
+
+/* form */
+.inp{width:100%;padding:11px 12px;border:1px solid var(--line-2);border-radius:3px;font-size:16px;background:#fff}
+.inp:focus{outline:none;border-color:var(--t2)}
+.inp.big{font-size:24px;font-weight:600;font-family:var(--mono)}
+.opt{padding:12px 6px;border:1px solid var(--line);border-radius:3px;background:#FAFAF8;text-align:center}
+.opt .em{font-size:20px;line-height:1.2}
+.opt .nm{font-size:11px;font-weight:500;margin-top:3px}
+.opt.on{color:#fff;border-color:transparent}
+.btn{padding:12px 16px;border-radius:3px;font-size:14px;font-weight:500;text-align:center}
+.btn-p{background:var(--ink);color:#fff;flex:1}
+.btn-p:disabled{opacity:.5}
+.btn-g{border:1px solid var(--line-2);color:var(--t2);flex:1}
+.btn-d{color:#B91C1C;padding:12px 14px}
+.seg{padding:12px;border:1px solid var(--line-2);border-radius:3px;font-size:14px;text-align:center;color:var(--t2)}
+.seg.on{color:#fff;border-color:transparent}
+
+/* toast */
+.toast{position:fixed;top:calc(12px + env(safe-area-inset-top));left:16px;right:16px;z-index:60;padding:12px 16px;border-radius:3px;font-size:14px;text-align:center;box-shadow:0 6px 20px #0002;animation:fade .15s ease-out}
+
+.tag{display:inline-block;margin-left:6px;font-size:10px;padding:1px 5px;border:1px solid;border-radius:3px;vertical-align:1px}
+
+/* status */
+.statusbar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;border-radius:3px;font-size:12px;background:#FFF8E8;border:1px solid #F0DFB5;color:#7A5A2C}
+.statusbar .spin{margin-right:6px;display:inline-block;vertical-align:-2px}
+.statusbar.err-bar{background:#FEF2F2;border-color:#FECACA;color:#991B1B}
+.retry{font-size:12px;font-weight:600;padding:5px 12px;border:1px solid currentColor;border-radius:3px;flex:0 0 auto}
+
+/* boot */
+.boot{min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--t2);font-size:14px;gap:8px}
+.note{font-size:11px;line-height:1.6;color:var(--t2)}
+.mini{font-size:10px;color:var(--t3);margin-top:3px}
+.box{padding:14px;border-radius:3px;border:1px solid var(--line-2);background:#fff}
+.box-w{border:2px solid var(--gold);background:#FFFBF3}
+.err{font-size:12px;color:#B91C1C;background:#FEF2F2;border:1px solid #FECACA;border-radius:3px;padding:10px}
+.code{font-size:10px;font-family:var(--mono);word-break:break-all;background:#F5F4F1;padding:10px;border-radius:3px;color:var(--t2)}
+</style>
+</head>
+<body>
+<div id="root"><div class="boot">載入中⋯</div></div>
+<script>
+/* 從 LINE 開啟時，網址 #api=… 會自動帶入個人 API 網址（# 後面的內容不會送到伺服器） */
+try{
+  var mh = location.hash.match(/(?:^#|&)api=([^&]+)/);
+  if (mh) {
+    var nu = decodeURIComponent(mh[1]);
+    if (/^https:\/\/[\w.-]+\.workers\.dev\/api\?key=[\w-]{16,}$/.test(nu) && localStorage.getItem('meinc_api_url') !== nu) {
+      localStorage.setItem('meinc_api_url', nu);
+      localStorage.removeItem('meinc_data_cache');      // 換了帳本，舊的畫面快取不能沿用
+      localStorage.removeItem('meinc_offline_queue');   // 舊帳本的待送佇列不能寫進新帳本
+    }
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}catch(e){}
+try{
+  var u = localStorage.getItem('meinc_api_url');
+  var q = localStorage.getItem('meinc_offline_queue');
+  if (u && (!q || q === '[]')) {
+    var fd = new FormData(); fd.append('payload', '{"action":"load"}');
+    var ctl = new AbortController();
+    setTimeout(function(){ ctl.abort(); }, 25000);
+    window.__boot = fetch(u, { method:'POST', body:fd, redirect:'follow', signal:ctl.signal })
+      .then(function(r){ return r.json(); }).catch(function(){ return null; });
+  }
+}catch(e){}
+</script>
+<link rel="modulepreload" href="./vendor.js">
+<script type="module" src="./app.js"></script>
+</body>
+</html>

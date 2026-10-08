@@ -1,0 +1,24 @@
+{
+  "name": "Me, Inc. 個人營運帳本",
+  "short_name": "Me, Inc.",
+  "description": "把你的人生，當作一間公司在經營",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#F5F1EA",
+  "theme_color": "#1F3A2E",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

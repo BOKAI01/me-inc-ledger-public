@@ -1,0 +1,30 @@
+name = "me-inc-ledger-public"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+# 機密值一律在 Cloudflare 後台設為「機密」（部署不會清掉）：
+#   LINE_CHANNEL_SECRET、LINE_CHANNEL_ACCESS_TOKEN、GOOGLE_CLIENT_SECRET、TOKEN_ENC_KEY
+
+# 公開設定（非機密）
+[vars]
+GOOGLE_CLIENT_ID = "430775966110-7kgfogemme49o7soq35ldflfhicm4p74.apps.googleusercontent.com"
+LINE_BASIC_ID = ""            # 公開版 LINE 官方帳號的 Basic ID，例如 "@abc1234x"
+SITE_URL = "https://bokai01.github.io/me-inc-ledger-public/"
+CONTACT_EMAIL = "ss107419062@gmail.com"
+
+[observability]
+enabled = true
+
+# KV 由部署流程自動建立並填入 id（見 .github/workflows/worker.yml）
+[[kv_namespaces]]
+binding = "KV"
+id = "__KV_ID__"
+
+[[durable_objects.bindings]]
+name = "ENTRY"
+class_name = "Entry"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Entry"]
