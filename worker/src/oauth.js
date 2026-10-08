@@ -103,7 +103,7 @@ export async function handleAuthCallback(request, env, deps = {}) {
       redirect_uri: `${url.origin}/auth/callback`, grant_type: 'authorization_code',
     }),
   });
-  if (!res.ok) return page('授權失敗', '<p>Google 沒有回傳授權，請回到 LINE 再試一次。</p>', 400);
+  if (!res.ok) { const e = await res.json().catch(() => ({})); console.error('token exchange failed', res.status, e.error, e.error_description); return page('授權失敗', `<p>Google 沒有回傳授權，請回到 LINE 再試一次。</p><p class="mute">錯誤代碼：${String(e.error || res.status).replace(/[<>&"]/g, '')}</p>`, 400); }
   const tok = await res.json();
   const granted = String(tok.scope || '').split(' ');
   if (!granted.includes(SCOPE)) {
