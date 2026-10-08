@@ -536,13 +536,24 @@ async function wipeUser(c, bind) {
 function keygenPage() {
   return page('產生加密金鑰', `
 <p>這把金鑰用來加密使用者的 Google 授權。<b>在你的瀏覽器裡產生，不會傳到任何伺服器。</b></p>
-<p style="word-break:break-all;font-family:monospace;background:#fff;padding:12px;border-radius:8px;border:1px solid #ddd" id="k">產生中…</p>
+<p style="word-break:break-all;font-family:monospace;background:#fff;padding:12px;border-radius:8px;border:1px solid #ddd;user-select:all" id="k">產生中…</p>
 <a class="btn" href="#" id="c">複製金鑰</a>
-<p class="mute">複製後貼到 Cloudflare → Worker → 設定 → 變數與機密，名稱填 <b>TOKEN_ENC_KEY</b>，類型選「機密」。<br>設定後請勿更換，否則已授權的使用者需要重新連結 Google。</p>
+<p class="mute">複製後貼到 Cloudflare → Worker → 設定 → 變數與機密，名稱填 <b>TOKEN_ENC_KEY</b>，類型選「機密」。<br>
+若按鈕無法複製，請點一下上方金鑰（會整串選取）再按 Ctrl+C。<br>設定後請勿更換，否則已授權的使用者需要重新連結 Google。</p>
 <script>
-const b=crypto.getRandomValues(new Uint8Array(32));let s='';for(const x of b)s+=String.fromCharCode(x);
-const k=btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-document.getElementById('k').textContent=k;
-document.getElementById('c').onclick=e=>{e.preventDefault();navigator.clipboard.writeText(k).then(()=>{e.target.textContent='已複製 ✅'})};
+var b = crypto.getRandomValues(new Uint8Array(32)), s = '';
+for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+var k = btoa(s).split('+').join('-').split('/').join('_').split('=').join('');
+var el = document.getElementById('k');
+el.textContent = k;
+document.getElementById('c').onclick = function (e) {
+  e.preventDefault();
+  var done = function () { e.target.textContent = '已複製 ✅'; };
+  var r = document.createRange(); r.selectNodeContents(el);
+  var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(k).then(done, function () { if (document.execCommand('copy')) done(); });
+  } else if (document.execCommand('copy')) done();
+};
 </script>`);
 }
