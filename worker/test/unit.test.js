@@ -112,3 +112,16 @@ test('google: 日期正規化與 Apps Script 一致', () => {
   assert.equal(normDate('2026/5/4'), '2026-05-04');
   assert.equal(normDate('2026-10-07'), '2026-10-07');
 });
+
+test('ledger: 撥款口袋欄空白或填日常時，由品項判斷口袋', () => {
+  const tx = [
+    { type: 'alloc', category: 'alloc_in', amount: 3000, client: '儲蓄', account: '' },
+    { type: 'alloc', category: 'alloc_in', amount: 3000, client: '緊急備用金', account: 'emergency' },
+    { type: 'alloc', category: 'alloc_out', amount: 1180, client: '儲蓄口袋撥回日常', account: 'savings' },
+    { type: 'alloc', category: 'alloc_in', amount: 500, client: '撥款', account: '' },
+  ];
+  const p = computePockets(tx, 10000);
+  assert.equal(p.savings, 1820);
+  assert.equal(p.emergency, 3500);
+  assert.equal(p.total, 10000);
+});
