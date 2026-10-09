@@ -1,4 +1,8 @@
 /* Google Sheets：服務帳戶 JWT 授權 + 讀寫 */
+import {
+  TAB_TXN, TAB_SET, TAB_TXN_EN, TAB_SET_EN, HEADER_ZH, HIDDEN_COLS, colKey, isZhHeader, zhHeaderOf, toSheet, fromSheet,
+  isZhSettings, setHeaderZh, settingToSheet, settingFromSheet,
+} from './zh.js';
 
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -73,15 +77,121 @@ async function sheetsFetch(token, path, init = {}, fetchImpl = fetch) {
   return res.json();
 }
 
-const rng = (a1) => encodeURIComponent(`'${TXN_SHEET}'!${a1}`);
+const rngIn = (tab, a1) => encodeURIComponent(`'${tab}'!${a1}`);
+
+/* ---------- 工作表名稱（中文化後為「記帳明細」「設定」，舊帳本為英文） ---------- */
+const tabCache = new Map();          // sheetId → { txn, set, gids: {title: gid} }
+const migrating = new Map();         // sheetId → 中文化檢查的 Promise（同時多個請求只做一次）
+
+export async function sheetTabs(token, sheetId, fetchImpl = fetch) {
+  if (tabCache.has(sheetId)) return tabCache.get(sheetId);
+  const j = await sheetsFetch(token, `/${sheetId}?fields=sheets.properties(sheetId,title)`, {}, fetchImpl);
+  const props = (j.sheets || []).map(x => x.properties);
+  const titles = props.map(p => p.title);
+  const pick = (zh, en, i) => (titles.includes(zh) ? zh : titles.includes(en) ? en : titles[i] || en);
+  const t = { txn: pick(TAB_TXN, TAB_TXN_EN, 0), set: pick(TAB_SET, TAB_SET_EN, 1), gids: Object.fromEntries(props.map(p => [p.title, p.sheetId])) };
+  tabCache.set(sheetId, t);
+  return t;
+}
+export function resetSheetCaches() { tabCache.clear(); migrating.clear(); }
+
+/**
+ * 舊帳本（英文標題）一次性轉成中文：工作表改名、標題與內容翻譯、凍結標題列、隱藏系統欄位、金額千分位。
+ * 只改「類型、分類、已收款、口袋」這幾欄與標題，不動日期與金額的儲存格。失敗不影響記帳。
+ */
+export async function ensureZh(token, sheetId, fetchImpl = fetch) {
+  if (!migrating.has(sheetId)) migrating.set(sheetId, migrate(token, sheetId, fetchImpl));
+  await migrating.get(sheetId);
+  return sheetTabs(token, sheetId, fetchImpl);
+}
+
+async function migrate(token, sheetId, fetchImpl) {
+  let t;
+  try { t = await sheetTabs(token, sheetId, fetchImpl); } catch (err) { migrating.delete(sheetId); throw err; }
+  if (t.txn === TAB_TXN && t.set === TAB_SET) return t;        // 已是中文（改名是最後一步，代表內容也已轉好）
+  try {
+    const j = await sheetsFetch(token,
+      `/${sheetId}/values:batchGet?ranges=${rngIn(t.txn, 'A:Z')}&ranges=${rngIn(t.set, 'A:C')}&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`, {}, fetchImpl);
+    const rows = j.valueRanges?.[0]?.values || [];
+    const sets = j.valueRanges?.[1]?.values || [];
+    const header = (rows[0] || []).map(String);
+    const needTabs = t.txn !== TAB_TXN || t.set !== TAB_SET;
+    const needHead = header.length > 0 && !isZhHeader(header);
+    const needSet = sets.length > 0 && !isZhSettings(sets[0]);
+    if (!needTabs && !needHead && !needSet) return t;
+
+    // 1. 標題與內容（用目前的工作表名稱）
+    const keys = header.map(colKey);
+    const data = [];
+    if (needHead) {
+      data.push({ range: `'${t.txn}'!A1`, values: [zhHeaderOf(header)] });
+      for (const k of ['type', 'category', 'received', 'account']) {
+        const ci = keys.indexOf(k);
+        if (ci < 0 || rows.length < 2) continue;
+        const col = rows.slice(1).map(r => {
+          const v = r[ci];
+          const empty = v === '' || v == null;
+          if (empty && k !== 'account') return [''];
+          if (k === 'account' && !r.some(c => c !== '' && c != null)) return [''];
+          return [toSheet(k, fromSheet(k, v))];
+        });
+        data.push({ range: `'${t.txn}'!${colName(ci)}2:${colName(ci)}${rows.length}`, values: col });
+      }
+    }
+    if (needSet) {
+      data.push({ range: `'${t.set}'!A1`, values: [setHeaderZh(sets[0].map(String))] });
+      if (sets.length > 1) data.push({ range: `'${t.set}'!A2:A${sets.length}`, values: sets.slice(1).map(r => [settingToSheet(settingFromSheet(r[0]))]) });
+    }
+    if (data.length) {
+      await sheetsFetch(token, `/${sheetId}/values:batchUpdate`, { method: 'POST', body: JSON.stringify({ valueInputOption: 'RAW', data }) }, fetchImpl);
+    }
+    // 2. 最後才改名＋格式：中途失敗時，下次會重新檢查
+    const gTxn = t.gids[t.txn], gSet = t.gids[t.set];
+    const reqs = [];
+    if (t.txn !== TAB_TXN && gTxn != null) reqs.push({ updateSheetProperties: { properties: { sheetId: gTxn, title: TAB_TXN }, fields: 'title' } });
+    if (t.set !== TAB_SET && gSet != null) reqs.push({ updateSheetProperties: { properties: { sheetId: gSet, title: TAB_SET }, fields: 'title' } });
+    reqs.push(...formatRequests(gTxn, gSet, keys));
+    if (reqs.length) {
+      await sheetsFetch(token, `/${sheetId}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests: reqs }) }, fetchImpl);
+      const nt = { txn: TAB_TXN, set: TAB_SET, gids: { ...t.gids, [TAB_TXN]: gTxn, [TAB_SET]: gSet } };
+      tabCache.set(sheetId, nt);
+      Object.assign(t, nt);
+    }
+
+    console.log('ledger migrated to zh', sheetId);
+  } catch (err) {
+    console.error('zh migration failed', sheetId, err);
+  }
+  return t;
+}
+
+/** 凍結標題列、標題粗體、隱藏系統欄位、金額千分位 */
+export function formatRequests(gTxn, gSet, keys) {
+  const reqs = [];
+  if (gTxn == null) return reqs;
+  for (const g of [gTxn, gSet]) {
+    if (g == null) continue;
+    reqs.push({ updateSheetProperties: { properties: { sheetId: g, gridProperties: { frozenRowCount: 1 } }, fields: 'gridProperties.frozenRowCount' } });
+    reqs.push({ repeatCell: { range: { sheetId: g, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { textFormat: { bold: true } } }, fields: 'userEnteredFormat.textFormat.bold' } });
+  }
+  for (const k of HIDDEN_COLS) {
+    const ci = keys.indexOf(k);
+    if (ci >= 0) reqs.push({ updateDimensionProperties: { range: { sheetId: gTxn, dimension: 'COLUMNS', startIndex: ci, endIndex: ci + 1 }, properties: { hiddenByUser: true }, fields: 'hiddenByUser' } });
+  }
+  const ai = keys.indexOf('amount');
+  if (ai >= 0) reqs.push({ repeatCell: { range: { sheetId: gTxn, startRowIndex: 1, startColumnIndex: ai, endColumnIndex: ai + 1 }, cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0' } } }, fields: 'userEnteredFormat.numberFormat' } });
+  if (gSet != null) reqs.push({ repeatCell: { range: { sheetId: gSet, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 }, cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0' } } }, fields: 'userEnteredFormat.numberFormat' } });
+  return reqs;
+}
 
 /** 讀標題列與 id 欄 */
 export async function readHeaderAndIds(token, sheetId, fetchImpl = fetch) {
+  const t = await ensureZh(token, sheetId, fetchImpl);
   const j = await sheetsFetch(token,
-    `/${sheetId}/values:batchGet?ranges=${rng('1:1')}&ranges=${rng('A:A')}&majorDimension=ROWS`, {}, fetchImpl);
+    `/${sheetId}/values:batchGet?ranges=${rngIn(t.txn, '1:1')}&ranges=${rngIn(t.txn, 'A:A')}&majorDimension=ROWS`, {}, fetchImpl);
   const header = (j.valueRanges?.[0]?.values?.[0] || []).map(String);
   const ids = (j.valueRanges?.[1]?.values || []).slice(1).map(r => String(r[0] ?? ''));
-  return { header, ids };
+  return { header, ids, tabs: t };
 }
 
 /* 試算表日期序號（1899-12-30 起算的天數）→ yyyy-MM-dd */
@@ -108,34 +218,37 @@ function serialToIso(n, tzOffsetMin = 480) {
  * 每筆交易附 _row（試算表列號，1 起算），供修改／刪除使用
  */
 export async function readLedger(token, sheetId, fetchImpl = fetch) {
-  const set = encodeURIComponent(`'Settings'!A:B`);
+  const tabs = await ensureZh(token, sheetId, fetchImpl);
   const j = await sheetsFetch(token,
-    `/${sheetId}/values:batchGet?ranges=${rng('A:Z')}&ranges=${set}`
+    `/${sheetId}/values:batchGet?ranges=${rngIn(tabs.txn, 'A:Z')}&ranges=${rngIn(tabs.set, 'A:B')}`
     + `&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`, {}, fetchImpl);
   const rows = j.valueRanges?.[0]?.values || [];
   const header = (rows[0] || []).map(String);
+  const keys = header.map(colKey);
   const transactions = [];
   rows.forEach((r, idx) => {
     if (idx === 0 || !r.some(c => c !== '' && c != null)) return;
-    const t = Object.fromEntries(header.map((h, i) => [h, r[i] ?? '']));
+    const t = Object.fromEntries(keys.map((k, i) => [k, fromSheet(k, r[i] ?? '')]));
     t.id = String(t.id ?? '');
     t.date = normDate(t.date);
     t.amount = Number(String(t.amount).replace(/,/g, '')) || 0;
     t.account = String(t.account ?? '');
     if (typeof t.createdAt === 'number') t.createdAt = serialToIso(t.createdAt);
-    if (header.includes('received')) t.received = t.received === true || String(t.received).toUpperCase() === 'TRUE';
-    if (header.includes('paymentTerm')) t.paymentTerm = Number(t.paymentTerm) || 0;
+    if (keys.includes('received')) t.received = fromSheet('received', r[keys.indexOf('received')]);
+    if (keys.includes('paymentTerm')) t.paymentTerm = Number(t.paymentTerm) || 0;
     Object.defineProperty(t, '_row', { value: idx + 1, enumerable: false });
     transactions.push(t);
   });
   const settings = {}, settingRows = {};
   (j.valueRanges?.[1]?.values || []).forEach((r, idx) => {
     if (idx === 0 || !r[0]) return;
-    settings[String(r[0])] = r[1];
-    settingRows[String(r[0])] = idx + 1;
+    const k = settingFromSheet(r[0]);
+    settings[k] = r[1];
+    settingRows[k] = idx + 1;
   });
   return {
     header,
+    tabs,
     transactions,
     settings,
     settingRows,
@@ -143,6 +256,20 @@ export async function readLedger(token, sheetId, fetchImpl = fetch) {
     cycleDay: Number(settings.cycleDay) || 1,
     fundTarget: Number(settings.fundTarget) || 50000,
   };
+}
+
+/** 交易某欄的 A1 位置與寫入值（依帳本是中文或英文） */
+export function txnCell(d, key, row, value) {
+  const ci = d.header.map(colKey).indexOf(key);
+  if (ci < 0) return null;
+  return { a1: `'${d.tabs.txn}'!${colName(ci)}${row}`, value: isZhHeader(d.header) ? toSheet(key, value) : value };
+}
+
+/** 寫入一項設定（存在就更新，否則新增一列） */
+export async function setSetting(token, sheetId, d, key, value, fetchImpl = fetch) {
+  if (d.settingRows[key]) return writeCells(token, sheetId, [{ a1: `'${d.tabs.set}'!B${d.settingRows[key]}`, value }], fetchImpl);
+  const zh = d.tabs.set === TAB_SET;
+  return appendRow(token, sheetId, d.tabs.set, [zh ? settingToSheet(key) : key, value], fetchImpl);
 }
 
 /** 一次寫入多個儲存格：[{ a1: "'Transactions'!C5", value }] */
@@ -162,14 +289,10 @@ export async function appendRow(token, sheetId, sheetName, row, fetchImpl = fetc
 }
 
 /** 取得工作表的數字 id（刪除列需要） */
-const gidCache = new Map();
 export async function sheetGid(token, sheetId, title, fetchImpl = fetch) {
-  const k = `${sheetId}/${title}`;
-  if (gidCache.has(k)) return gidCache.get(k);
-  const j = await sheetsFetch(token, `/${sheetId}?fields=sheets.properties(sheetId,title)`, {}, fetchImpl);
-  for (const sh of j.sheets || []) gidCache.set(`${sheetId}/${sh.properties.title}`, sh.properties.sheetId);
-  if (!gidCache.has(k)) throw new Error(`找不到工作表 ${title}`);
-  return gidCache.get(k);
+  const t = await sheetTabs(token, sheetId, fetchImpl);
+  if (t.gids[title] == null) throw new Error(`找不到工作表 ${title}`);
+  return t.gids[title];
 }
 
 /** 刪除指定列（1 起算） */
@@ -188,13 +311,19 @@ export function colName(i) {
   return s;
 }
 
-/** 依標題順序附加多列（一次 API 呼叫） */
+/** 依標題順序附加多列（一次 API 呼叫）；中文帳本自動翻譯內容 */
 export async function appendTxns(token, sheetId, header, txns, fetchImpl = fetch) {
-  if (!header.length || header[0] !== 'id') throw new Error('Transactions 工作表標題列不符');
+  const keys = header.map(colKey);
+  if (!keys.length || keys[0] !== 'id') throw new Error('記帳明細工作表標題列不符');
   if (!txns.length) return null;
-  const values = txns.map(txn => header.map(h => (txn[h] === undefined ? '' : txn[h])));
+  const zh = isZhHeader(header);
+  const tabs = await sheetTabs(token, sheetId, fetchImpl);
+  const values = txns.map(txn => keys.map(k => {
+    const v = txn[k] === undefined ? '' : txn[k];
+    return zh && v !== '' ? toSheet(k, v) : zh && k === 'account' ? toSheet(k, '') : v;
+  }));
   return sheetsFetch(token,
-    `/${sheetId}/values/${rng('A1')}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+    `/${sheetId}/values/${rngIn(tabs.txn, 'A1')}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
     { method: 'POST', body: JSON.stringify({ values }) }, fetchImpl);
 }
 export const appendTxn = (token, sheetId, header, txn, fetchImpl = fetch) =>

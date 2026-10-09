@@ -9,7 +9,7 @@ import { splitCall } from './split-do.js';
 import { myShares, balances } from './split-core.js';
 import { encryptText, decryptText } from './crypto.js';
 import { tokenFor, bindKey, obKey, needsRelink } from './oauth.js';
-import { readHeaderAndIds, appendTxns, readLedger, writeCells, appendRow } from './google.js';
+import { readHeaderAndIds, appendTxns, readLedger, setSetting } from './google.js';
 
 /** 公開版的個人帳本綁定在哪個頻道（目前 webhook 為 /line/webhook，即 ''） */
 const chOf = (env) => env.SPLIT_CHANNEL || '';
@@ -91,8 +91,7 @@ async function savePayout(env, b, bank, acct, fetchImpl) {
   const token = await tokenFor(env, b, fetchImpl);
   const d = await readLedger(token, b.sheetId, fetchImpl);
   const v = `${bank}-${acct}`;
-  if (d.settingRows.payoutAccount) await writeCells(token, b.sheetId, [{ a1: `'Settings'!B${d.settingRows.payoutAccount}`, value: v }], fetchImpl);
-  else await appendRow(token, b.sheetId, 'Settings', ['payoutAccount', v], fetchImpl);
+  await setSetting(token, b.sheetId, d, 'payoutAccount', v, fetchImpl);
 }
 
 export async function handleSplitApi(request, env, deps = {}) {

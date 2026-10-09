@@ -7,7 +7,7 @@
  */
 import { tokenFor } from './oauth.js';
 import {
-  readLedger, appendTxns, writeCells, appendRow, deleteRow, colName, TXN_SHEET,
+  readLedger, appendTxns, writeCells, deleteRow, txnCell, setSetting,
 } from './google.js';
 import { entryCall } from './entry.js';
 
@@ -100,10 +100,10 @@ async function runAction(p, bind, env, fetchImpl) {
         const fields = p.fields || {};
         const cells = [];
         for (const [k, v] of Object.entries(fields)) {
-          const ci = d.header.indexOf(k);
-          if (ci < 0 || k === 'id') continue;
+          if (k === 'id') continue;
           const value = k === 'amount' ? Number(v) || 0 : k === 'date' ? String(v).slice(0, 10) : (v ?? '');
-          cells.push({ a1: `'${TXN_SHEET}'!${colName(ci)}${row._row}`, value });
+          const cell = txnCell(d, k, row._row, value);
+          if (cell) cells.push(cell);
         }
         await writeCells(token, sheetId, cells, fetchImpl);
         return { id: p.id };
@@ -113,7 +113,7 @@ async function runAction(p, bind, env, fetchImpl) {
         const d = await readLedger(token, sheetId, fetchImpl);
         const rows = d.transactions.filter(t => t.id === String(p.id));
         if (!rows.length) return { id: p.id, missing: true };
-        await deleteRow(token, sheetId, TXN_SHEET, rows[rows.length - 1]._row, fetchImpl);   // 同 id 多列時刪最後一列
+        await deleteRow(token, sheetId, d.tabs.txn, rows[rows.length - 1]._row, fetchImpl);   // 同 id 多列時刪最後一列
         return { id: p.id };
       });
     case 'setSetting':
@@ -125,8 +125,7 @@ async function runAction(p, bind, env, fetchImpl) {
       if (k === 'cycleDay' && (v < 1 || v > 28)) throw new Error('結算日需介於 1–28');
       return withLock(env, sheetId, async () => {
         const d = await readLedger(token, sheetId, fetchImpl);
-        if (d.settingRows[k]) await writeCells(token, sheetId, [{ a1: `'Settings'!B${d.settingRows[k]}`, value: v }], fetchImpl);
-        else await appendRow(token, sheetId, 'Settings', [k, v], fetchImpl);
+        await setSetting(token, sheetId, d, k, v, fetchImpl);
         return { key: k, value: v };
       });
     }

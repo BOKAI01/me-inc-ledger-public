@@ -5,7 +5,7 @@
  */
 import { verifySignature, reply, text, confirmCard, batchCard, categoryQuickReply, allocQuickReply } from './line.js';
 import { parseEntry, parseDateOnly, guessCategory, allocEntry } from './parse.js';
-import { readHeaderAndIds, readLedger, appendTxns, writeCells, appendRow, GoogleAuthError, SheetAccessError } from './google.js';
+import { readHeaderAndIds, readLedger, appendTxns, setSetting, GoogleAuthError, SheetAccessError } from './google.js';
 import { tokenFor, AuthRevokedError, needsRelink, bindKey, tokKey, obKey, authLink, handleAuthStart, handleAuthCallback, privacyPage, page } from './oauth.js';
 import { computePockets, computeSummary, taipeiToday, catLabel, fmt } from './ledger.js';
 import { Entry, entryCall } from './entry.js';
@@ -459,8 +459,7 @@ function siteMessage(c, bind) {
 async function setLedgerSetting(c, bind, key, value) {
   const token = await tokenFor(c.env, bind, c.fetchImpl);
   const d = await readLedger(token, bind.sheetId, c.fetchImpl);
-  if (d.settingRows[key]) await writeCells(token, bind.sheetId, [{ a1: `'Settings'!B${d.settingRows[key]}`, value }], c.fetchImpl);
-  else await appendRow(token, bind.sheetId, 'Settings', [key, value], c.fetchImpl);
+  await setSetting(token, bind.sheetId, d, key, value, c.fetchImpl);
 }
 
 async function onboarding(ev, c, bind, ob, msgText) {

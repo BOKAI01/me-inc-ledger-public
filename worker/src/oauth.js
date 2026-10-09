@@ -7,7 +7,8 @@
  */
 import { getAccessToken, GoogleAuthError } from './google.js';
 import { encryptText, decryptText, signState, verifyState, randomKey } from './crypto.js';
-import { HEADER_ROW } from './schema.js';
+import { HEADER_ZH, HEADER_EN, SET_HEADER_ZH, TAB_TXN, TAB_SET } from './zh.js';
+import { formatRequests } from './google.js';
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -143,8 +144,8 @@ export async function createLedgerSheet(accessToken, fetchImpl = fetch) {
     body: JSON.stringify({
       properties: { title: LEDGER_TITLE, locale: 'zh_TW', timeZone: 'Asia/Taipei' },
       sheets: [
-        { properties: { title: 'Transactions', gridProperties: { frozenRowCount: 1 } } },
-        { properties: { title: 'Settings', gridProperties: { frozenRowCount: 1 } } },
+        { properties: { title: TAB_TXN, gridProperties: { frozenRowCount: 1 } } },
+        { properties: { title: TAB_SET, gridProperties: { frozenRowCount: 1 } } },
       ],
     }),
   });
@@ -156,12 +157,20 @@ export async function createLedgerSheet(accessToken, fetchImpl = fetch) {
     body: JSON.stringify({
       valueInputOption: 'RAW',
       data: [
-        { range: `'Transactions'!A1`, values: [HEADER_ROW] },
-        { range: `'Settings'!A1`, values: [['key', 'value', 'note'], ['openingBalance', 0, '期初金額'], ['cycleDay', 1, '結算日（1–28）'], ['fundTarget', 50000, '緊急備用金目標']] },
+        { range: `'${TAB_TXN}'!A1`, values: [HEADER_ZH] },
+        { range: `'${TAB_SET}'!A1`, values: [SET_HEADER_ZH, ['期初存款', 0, '開通時的存款，計算餘額的起點'], ['結算日', 1, '每月幾號開始新的一期（1–28）'], ['緊急備用金目標', 50000, '緊急備用金的目標金額']] },
       ],
     }),
   });
   if (!w.ok) throw new GoogleAuthError(`初始化帳本失敗（HTTP ${w.status}）`);
+  // 凍結標題列、隱藏系統欄位、金額千分位（失敗不影響使用）
+  try {
+    const gid = (t) => (j.sheets || []).find(x => x.properties?.title === t)?.properties?.sheetId;
+    const reqs = formatRequests(gid(TAB_TXN), gid(TAB_SET), HEADER_EN);
+    if (reqs.length) {
+      await fetchImpl(`https://sheets.googleapis.com/v4/spreadsheets/${id}:batchUpdate`, { method: 'POST', headers: h, body: JSON.stringify({ requests: reqs }) });
+    }
+  } catch (err) { console.error('format failed', err); }
   return id;
 }
 
