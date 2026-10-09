@@ -19,6 +19,7 @@ export const SPLIT_HELP = [
   '・+項目 金額 @名字付　指定誰先付',
   '・+項目 金額 不含名字　排除某人',
   '・分帳　看目前總覽',
+  '・記一筆　用網頁輸入，可選付款人與分攤的人',
   '・結算　算出誰該付誰多少',
   '・結束分帳　建立者結束並決定是否保留',
   '',
@@ -183,7 +184,7 @@ export function tutorialCard(env) {
 }
 
 /* ---------- 事件處理 ---------- */
-const CMD = /^(開分帳|建立分帳區|分帳區|分帳|結算|結束分帳|分帳說明|說明)$/;
+const CMD = /^(開分帳|建立分帳區|分帳區|分帳|分帳總覽|結算|結束分帳|分帳說明|說明)$/;
 const gidOf = (src) => src.groupId || src.roomId;
 const curKey = (gid) => `grp:${gid}`;
 const waitKey = (gid) => `grpw:${gid}`;
@@ -218,12 +219,44 @@ async function accountsOf(env, s) {
 /**
  * deps: { env, token, fetchImpl, today, send }
  */
+/** 群組快捷列：附在每則回覆的最後一則訊息上（訊息自己有快捷列時不覆蓋） */
+export function groupQuickReply(env, s) {
+  const items = [];
+  const add = (action) => items.push({ type: 'action', action });
+  if (s) {
+    const u = webUrl(env, s.sid, 'add');
+    if (u) add({ type: 'uri', label: '記一筆', uri: u });
+    add({ type: 'message', label: '分帳總覽', text: '分帳' });
+    add({ type: 'message', label: '結算', text: '結算' });
+    add({ type: 'postback', label: '加入分帳', data: `a=sj&s=${s.sid}`, displayText: '加入分帳' });
+    add({ type: 'message', label: '結束分帳', text: '結束分帳' });
+  } else {
+    add({ type: 'postback', label: '建立分帳區', data: 'a=sc', displayText: '建立分帳區' });
+  }
+  add({ type: 'message', label: '說明', text: '分帳說明' });
+  return { items };
+}
+
+export function withQuickReply(msgs, qr) {
+  const arr = (Array.isArray(msgs) ? msgs : [msgs]).filter(Boolean);
+  if (!arr.length) return arr;
+  const last = arr[arr.length - 1];
+  if (!last.quickReply) arr[arr.length - 1] = { ...last, quickReply: qr };
+  return arr;
+}
+
 export async function handleGroupEvent(ev, deps) {
   const src = ev.source || {};
   const gid = gidOf(src);
   if (!gid) return;
   const c = { ...deps, src, gid, uid: src.userId };
-  const { env, send } = c;
+  const { env } = c;
+  const send = async (msgs) => {
+    let s = null;
+    try { s = await current(c); } catch (err) { console.error('quick reply state failed', err); }
+    return deps.send(withQuickReply(msgs, groupQuickReply(env, s)));
+  };
+  c.send = send;
 
   if (ev.type === 'join') return send(welcomeCard());
   if (!c.uid) return;
@@ -243,7 +276,7 @@ export async function handleGroupEvent(ev, deps) {
     const s = await current(c);
     if (/^(開分帳|建立分帳區|分帳區)$/.test(t)) return send(s ? createdCard(env, s) : welcomeCard());
     if (!s) return send(text('目前沒有進行中的分帳區。', qrPost([['建立分帳區', 'a=sc']])));
-    if (t === '分帳') return send(summaryCard(env, s));
+    if (t === '分帳' || t === '分帳總覽') return send(summaryCard(env, s));
     if (t === '結算') {
       const r = await splitCall(env, s.sid, 'settle', c.uid);
       if (!r.res.ok) return send(text(r.res.error));

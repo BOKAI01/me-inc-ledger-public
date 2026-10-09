@@ -11,7 +11,7 @@ import { computePockets, computeSummary, taipeiToday, catLabel, fmt } from './le
 import { Entry, entryCall } from './entry.js';
 import { handleApi } from './api.js';
 import { Split } from './split-do.js';
-import { handleGroupEvent, tutorialCard } from './split-line.js';
+import { handleGroupEvent, tutorialCard, withQuickReply } from './split-line.js';
 import { splitPage, handleSplitApi } from './split-web.js';
 
 export { Entry, Split };
@@ -49,6 +49,8 @@ const PRIVACY_SHORT = [
   '・隨時可到 Google 帳戶移除授權，或在這裡輸入「刪除我的資料」',
 ].join('\n');
 const RELINK_MSG = '❌ 你的 Google 授權已取消或過期。輸入「重新連結」重新授權後即可繼續使用，帳本資料不會遺失';
+const DM_QUICK = { items: [['餘額', '餘額'], ['本期摘要', '摘要'], ['開啟網站', '網站'], ['和朋友分帳', '開分帳'], ['說明', '說明']]
+  .map(([label, t]) => ({ type: 'action', action: { type: 'message', label, text: t } })) };
 const SITE_DEFAULT = 'https://bokai01.github.io/me-inc-ledger/';
 
 export default {
@@ -94,7 +96,7 @@ export async function handleEvent(ev, env, deps = {}) {
   const today = deps.today || taipeiToday();
   const uid = ev.source?.userId;
   const C = channel(env, deps.ch || '');
-  const send = (msgs) => (ev.replyToken ? reply(C.token, ev.replyToken, msgs, fetchImpl) : null);
+  let send = (msgs) => (ev.replyToken ? reply(C.token, ev.replyToken, msgs, fetchImpl) : null);
 
   // 群組／多人聊天室：只處理分帳，絕不寫入個人帳本
   if (ev.source?.type === 'group' || ev.source?.type === 'room') {
@@ -120,6 +122,10 @@ export async function handleEvent(ev, env, deps = {}) {
   // 尚未開通，或開通流程進行中
   const ob = bind ? await env.KV.get(obKey(C.ch, uid), 'json') : null;
   if (!bind || !bind.sheetId || ob) return onboarding(ev, ctxo, bind, ob, msgText);
+
+  // 已開通：每則回覆附上快捷列
+  const rawSend = send;
+  send = (msgs) => rawSend(withQuickReply(msgs, DM_QUICK));
 
   if (msgText && /^(網站|開啟網站|圖表)$/.test(msgText)) return send(siteMessage(ctxo, bind));
   if (msgText && /^(我的帳本|試算表)$/.test(msgText)) return send(text(`📄 你的帳本：\nhttps://docs.google.com/spreadsheets/d/${bind.sheetId}/edit`));

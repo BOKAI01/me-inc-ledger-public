@@ -162,6 +162,40 @@ export function apply(state, op, actor, args = {}) {
       return okr(s, { eid: e.id });
     }
 
+    case 'addItem': {                                    // 網頁「記一筆」：送出即記入
+      if (closed) return fail(s, '這個分帳區已經結束了');
+      if (!isMember(s, actor)) return fail(s, '請先加入分帳');
+      if (s.entries.length >= MAX_ENTRIES) return fail(s, `一個分帳區最多 ${MAX_ENTRIES} 筆`);
+      const desc = String(args.desc || '').trim().slice(0, 30);
+      const amount = Number(args.amount);
+      if (!desc) return fail(s, '請輸入項目名稱');
+      if (!Number.isInteger(amount) || amount <= 0) return fail(s, '金額需是大於 0 的整數');
+      if (amount > 10000000) return fail(s, '金額太大了，請確認一下');
+      const payer = args.payer || actor;
+      if (!isMember(s, payer)) return fail(s, '付款人不在分帳區裡');
+      const parts = s.members.map(m => m.id).filter(m => (args.parts || []).includes(m));
+      if (!parts.length) return fail(s, '至少要有一位分攤的人');
+      let shares = equalShares(amount, parts, payer), mode = 'equal';
+      if (args.shares) {
+        let sum = 0;
+        const c = {};
+        for (const m of parts) {
+          const n = Number(args.shares[m]);
+          if (!Number.isInteger(n) || n < 0) return fail(s, '每人金額需是 0 以上的整數');
+          c[m] = n; sum += n;
+        }
+        if (sum !== amount) return fail(s, `每人金額加總 $${sum.toLocaleString('en-US')}，要等於 $${amount.toLocaleString('en-US')}`);
+        if (parts.some(m => c[m] !== shares[m])) { shares = c; mode = 'custom'; }
+      }
+      const e = {
+        id: 'e' + (s.seq++), desc, amount, payer, parts: parts.filter(m => shares[m] > 0), shares, mode,
+        cat: guessCategory(desc, 'outflow'), by: actor, status: 'ok', date: args.today,
+      };
+      for (const m of Object.keys(e.shares)) if (!e.shares[m]) delete e.shares[m];
+      s.entries.push(e);
+      return okr(s, { eid: e.id, recalc: recalc(s) });
+    }
+
     case 'confirm':
     case 'cancel': {
       const e = entry(args.eid);

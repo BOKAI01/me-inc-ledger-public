@@ -118,6 +118,7 @@ export async function handleSplitApi(request, env, deps = {}) {
       }
       case 'join': return done(await call('join', { name: who.name }));
       case 'addTemp': return done(await call('addTemp', { name: p.name }));
+      case 'addItem': return done(await call('addItem', { desc: p.desc, amount: p.amount, payer: p.payer, parts: p.parts, shares: p.shares }));
       case 'confirm': return done(await call('confirm', { eid: p.eid }));
       case 'delete': return done(await call('delete', { eid: p.eid }));
       case 'edit': return done(await call('edit', { eid: p.eid, payer: p.payer, shares: p.shares }));
