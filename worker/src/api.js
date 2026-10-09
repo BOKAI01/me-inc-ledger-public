@@ -12,7 +12,7 @@ import {
 import { withSheetLock } from './entry.js';
 
 const DUP_WINDOW_MS = 60 * 1000;
-const SETTABLE = new Set(['cycleDay', 'fundTarget', 'openingBalance']);
+const SETTABLE = new Set(['cycleDay', 'fundTarget', 'savingsTarget', 'openingBalance']);
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -69,7 +69,7 @@ async function runAction(p, bind, env, fetchImpl) {
   switch (p.action) {
     case 'load': {
       const d = await readLedger(token, sheetId, fetchImpl);
-      const out = { transactions: d.transactions, openingBalance: d.openingBalance, cycleDay: d.cycleDay, fundTarget: d.fundTarget };
+      const out = { transactions: d.transactions, openingBalance: d.openingBalance, cycleDay: d.cycleDay, fundTarget: d.fundTarget, savingsTarget: d.savingsTarget };
       for (const [k, v] of Object.entries(d.settings)) if (k.startsWith('openingBalance_')) out[k] = Number(v) || 0;
       return out;
     }
@@ -123,6 +123,7 @@ async function runAction(p, bind, env, fetchImpl) {
       const v = Number(p.value);
       if (!Number.isFinite(v)) throw new Error('設定值必須是數字');
       if (k === 'cycleDay' && (v < 1 || v > 28)) throw new Error('結算日需介於 1–28');
+      if (/Target$/.test(k) && v < 0) throw new Error('目標金額不能是負數');
       return withLock(env, sheetId, async () => {
         const d = await readLedger(token, sheetId, fetchImpl);
         await setSetting(token, sheetId, d, k, v, fetchImpl);

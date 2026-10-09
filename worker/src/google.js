@@ -309,6 +309,7 @@ export async function readLedger(token, sheetId, fetchImpl = fetch) {
     openingBalance: Number(settings.openingBalance) || 0,
     cycleDay: Number(settings.cycleDay) || 1,
     fundTarget: Number(settings.fundTarget) || 50000,
+    savingsTarget: Math.max(0, Number(settings.savingsTarget) || 0),
   };
 }
 

@@ -138,6 +138,21 @@ export async function handleEvent(ev, env, deps = {}) {
     const msg = ev.message.text.trim();
     if (/^(餘額|余額|結餘)$/.test(msg)) return send(text(await balanceText(env, bind, fetchImpl)));
     if (/^(摘要|本期|本月)$/.test(msg)) return send(text(await summaryText(env, bind, today, fetchImpl)));
+    const tg = msg.replace(/[,，\s]/g, '').match(/^(儲蓄|存款|緊急備用金|緊急|備用金)目標(\d{0,10})$/);
+    if (tg) {
+      const key = /儲蓄|存款/.test(tg[1]) ? 'savingsTarget' : 'fundTarget';
+      const label = key === 'savingsTarget' ? '儲蓄目標' : '緊急備用金目標';
+      if (!tg[2]) return send(text(`請在後面加上金額，例如：${label} 100000${key === 'savingsTarget' ? '\n（設 0 可取消儲蓄目標）' : ''}`));
+      const v = Number(tg[2]);
+      if (key === 'fundTarget' && v <= 0) return send(text('緊急備用金目標要大於 0。'));
+      try {
+        await setLedgerSetting({ env, fetchImpl }, bind, key, v);
+      } catch (err) {
+        console.error('set target failed', err);
+        return send(text(needsRelink(err, bind) ? RELINK_MSG + '。' : `❌ 設定失敗：${err.message}`));
+      }
+      return send(text(v > 0 ? `✅ ${label}已設為 $${fmt(v)}\n\n${await balanceText(env, bind, fetchImpl)}` : '✅ 已取消儲蓄目標'));
+    }
     if (/^(說明|幫助|help|\?|？)$/i.test(msg)) return send(text(`${HELP}\n\n📖 完整使用說明：\n${ctxo.base}/guide`));
     if (/^調整/.test(msg)) return send(text('「調整」類型要等網站改版後才開放，目前請在網站上操作。'));
 
@@ -342,14 +357,16 @@ async function balanceText(env, bind, fetchImpl) {
   try {
     const d = await loadLedger(env, bind, fetchImpl);
     const p = computePockets(d.transactions, d.openingBalance);
-    const gap = d.fundTarget - p.emergency;
-    return [
+    const goal = (cur, target) => (target - cur > 0 ? `　還差 $${fmt(target - cur)}` : '　已達標 🎉');
+    const lines = [
       `💰 帳戶總額 $${fmt(p.total)}`,
       `👛 日常口袋 $${fmt(p.daily)}${p.daily < 0 ? '（超支）' : ''}`,
-      `🏦 儲蓄口袋 $${fmt(p.savings)}${p.savings < 0 ? '（超支）' : ''}`,
-      `🛟 緊急備用金 $${fmt(p.emergency)} / $${fmt(d.fundTarget)}`,
-      gap > 0 ? `　還差 $${fmt(gap)}` : '　已達標 🎉',
-    ].join('\n');
+    ];
+    if (d.savingsTarget > 0) lines.push(`🏦 儲蓄口袋 $${fmt(p.savings)} / $${fmt(d.savingsTarget)}`, goal(p.savings, d.savingsTarget));
+    else lines.push(`🏦 儲蓄口袋 $${fmt(p.savings)}${p.savings < 0 ? '（超支）' : ''}`);
+    lines.push(`🛟 緊急備用金 $${fmt(p.emergency)} / $${fmt(d.fundTarget)}`, goal(p.emergency, d.fundTarget));
+    if (!(d.savingsTarget > 0)) lines.push('', '💡 傳「儲蓄目標 100000」可設定儲蓄目標');
+    return lines.join('\n');
   } catch (err) {
     console.error('balance failed', err);
     if (needsRelink(err, bind)) return RELINK_MSG + '。';

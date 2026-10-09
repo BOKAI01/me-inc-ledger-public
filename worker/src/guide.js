@@ -47,6 +47,8 @@ a.btn{display:block;text-align:center;background:var(--brand);color:var(--card);
 <section><h2><b>4</b>三個口袋與撥款</h2>
 <p>錢分成「日常、儲蓄、緊急備用金」三個口袋。撥款只是在口袋之間移動，不算收入或支出。</p>
 <div class="ex"><code>撥款 儲蓄 3000</code><code>撥款 緊急 5000</code><code>撥回 儲蓄 2000</code></div>
+<p>兩個口袋都能設定目標，傳「餘額」會顯示進度：</p>
+<div class="ex"><code>儲蓄目標 100000</code><code>緊急目標 150000</code></div>
 </section>
 
 <section class="split"><h2><b>5</b>和朋友分帳</h2>
