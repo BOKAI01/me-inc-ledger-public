@@ -107,8 +107,8 @@ function world() {
   const sheets = fakeSheetsApi(w.sheets);
   w.fetch = async (url, init = {}) => {
     const u = String(url);
-    const pm = u.match(/\/v2\/bot\/group\/G1\/member\/(\w+)$/);
-    if (pm) return Response.json({ displayName: NAMES[pm[1]] || '路人' });
+    const pm = u.match(/\/v2\/bot\/group\/G1\/member\/(\w+)$/) || u.match(/\/v2\/bot\/profile\/(\w+)$/);
+    if (pm) return w.profileDown ? new Response('{"message":"Not found"}', { status: 404 }) : Response.json({ displayName: NAMES[pm[1]] || '路人' });
     if (u.startsWith('https://api.line.me/v2/bot/message/reply')) { w.replies.push(JSON.parse(init.body)); return Response.json({}); }
     if (u === 'https://api.line.me/oauth2/v2.1/verify') {
       const t = new URLSearchParams(String(init.body)).get('id_token');
@@ -308,4 +308,29 @@ test('快捷列：群組依狀態顯示、私訊已開通才顯示、不覆蓋�
   assert.deepEqual(labels(), ['餘額', '本期摘要', '開啟網站', '和朋友分帳', '說明']);
   await dm(C, '說明');
   assert.equal(w.last().at(-1).quickReply, undefined);
+});
+
+test('成員名稱：查不到時用預設名，之後互動自動補上真名；也可「改名」', async () => {
+  const w = world(), E = await env();
+  const deps = { ch: '', base: 'https://bot.test', fetch: w.fetch, today: '2026-10-08' };
+  const src = (u) => ({ type: 'group', groupId: 'G1', userId: u });
+  const say = (u, t) => handleEvent({ type: 'message', replyToken: 'r', source: src(u), message: { type: 'text', text: t } }, E, deps);
+  const tap = (u, d) => handleEvent({ type: 'postback', replyToken: 'r', source: src(u), postback: { data: d } }, E, deps);
+  const names = async () => (await E.SPLIT.get(E.KV.m.get('grp:G1')).fetch('https://x/', { method: 'POST', body: JSON.stringify({ op: 'get' }) }).then(r => r.json())).state.members.map(m => m.name);
+
+  w.profileDown = true;
+  await tap(A, 'a=sc'); await say(A, '聚餐');
+  const sid = E.KV.m.get('grp:G1');
+  await tap(B, `a=sj&s=${sid}`);
+  assert.deepEqual(await names(), ['成員aaa1', '成員bbb2']);
+
+  w.profileDown = false;
+  await say(B, '分帳');                                // 下次互動自動補上真名
+  assert.deepEqual(await names(), ['成員aaa1', '小明']);
+  await say(A, '改名 博凱哥');
+  assert.match(w.last()[0].text, /已改名為「博凱哥」/);
+  await say(A, '分帳');                                // 手動改的名字不會被自動覆蓋
+  assert.deepEqual(await names(), ['博凱哥', '小明']);
+  await say(B, '改名 博凱哥');
+  assert.match(w.last()[0].text, /已經有叫「博凱哥」/);
 });
