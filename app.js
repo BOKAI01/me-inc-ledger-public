@@ -44,6 +44,12 @@ function pocketByName(text) {
   return null;
 }
 
+/* 撥款的口袋：口袋欄空白或填「日常」時（例如手動輸入），改由品項／備註判斷，最後才預設緊急備用金 */
+function allocPocket(tx) {
+  if (tx.account === 'savings' || tx.account === 'emergency') return tx.account;
+  return pocketByName(tx.client) || pocketByName(tx.description) || 'emergency';
+}
+
 /**
  * 一筆分錄只有兩種語意：
  *   alloc  口袋之間的配置，帳戶總額不變，不是收入也不是支出
@@ -51,7 +57,7 @@ function pocketByName(text) {
  */
 function classify(tx) {
   if (tx.type === 'alloc') {
-    return { kind: 'alloc', dir: tx.category === 'alloc_out' ? 'out' : 'in', pocket: tx.account || 'emergency' };
+    return { kind: 'alloc', dir: tx.category === 'alloc_out' ? 'out' : 'in', pocket: allocPocket(tx) };
   }
   // 舊資料相容：記成「支出-其他」且品項為備用金／儲蓄者，實為口袋配置
   if (tx.type === 'outflow' && tx.category === 'other_out' && (!tx.account || tx.account === 'daily')) {
