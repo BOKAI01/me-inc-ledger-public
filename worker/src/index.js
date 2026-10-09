@@ -13,6 +13,7 @@ import { handleApi } from './api.js';
 import { Split } from './split-do.js';
 import { handleGroupEvent, tutorialCard, withQuickReply } from './split-line.js';
 import { splitPage, handleSplitApi } from './split-web.js';
+import { guidePage } from './guide.js';
 
 export { Entry, Split };
 
@@ -65,6 +66,7 @@ export default {
     if (url.pathname === '/auth/start') return handleAuthStart(request, env);
     if (url.pathname === '/auth/callback') return handleAuthCallback(request, env);
     if (url.pathname === '/privacy') return privacyPage(env);
+    if (url.pathname === '/guide') return guidePage(env);
     if (url.pathname === '/keygen') return keygenPage();
     if (url.pathname === '/') return page('Me, Inc. 記帳機器人', '<p>用 LINE 傳一句話就能記帳，資料存在你自己的 Google 雲端硬碟。</p><p><a href="/privacy">隱私權說明</a></p>');
     return new Response('Not found', { status: 404 });
@@ -136,7 +138,7 @@ export async function handleEvent(ev, env, deps = {}) {
     const msg = ev.message.text.trim();
     if (/^(餘額|余額|結餘)$/.test(msg)) return send(text(await balanceText(env, bind, fetchImpl)));
     if (/^(摘要|本期|本月)$/.test(msg)) return send(text(await summaryText(env, bind, today, fetchImpl)));
-    if (/^(說明|幫助|help|\?|？)$/i.test(msg)) return send(text(HELP));
+    if (/^(說明|幫助|help|\?|？)$/i.test(msg)) return send(text(`${HELP}\n\n📖 完整使用說明：\n${ctxo.base}/guide`));
     if (/^調整/.test(msg)) return send(text('「調整」類型要等網站改版後才開放，目前請在網站上操作。'));
 
     const { entries, bad } = parseMessage(msg, today);
@@ -407,7 +409,7 @@ function welcomeCard(c) {
     '用 LINE 傳一句話就能記帳，例如「午餐 120」。',
     '資料會存在「你自己的」Google 雲端硬碟，不在我這裡。',
     '開通大約 1 分鐘，共 3 步：\n1. 連結 Google 帳號（建立你的帳本）\n2. 輸入目前存款（計算餘額的起點）\n3. 選結算日（每一期從幾號開始）',
-  ], [pbBtn('開始設定', 'a=ob_start', true), uriBtn('先看隱私說明', `${c.base}/privacy`)]);
+  ], [pbBtn('開始設定', 'a=ob_start', true), uriBtn('看使用說明', `${c.base}/guide`), uriBtn('隱私說明', `${c.base}/privacy`)]);
 }
 
 async function authCard(c, again = false) {
@@ -507,7 +509,7 @@ async function onboarding(ev, c, bind, ob, msgText) {
       await setLedgerSetting(c, bind, 'cycleDay', d);
       await env.KV.delete(obKey(ch, uid));
       return send([
-        text(`🎉 開通完成！結算日：每月 ${d} 號\n\n現在試試看，傳一句：\n午餐 120\n\n我會先給你一張確認卡片，按「確認寫入」才會記進帳本。輸入「說明」可以看所有用法。`),
+        text(`🎉 開通完成！結算日：每月 ${d} 號\n\n現在試試看，傳一句：\n午餐 120\n\n我會先給你一張確認卡片，按「確認寫入」才會記進帳本。\n\n📖 使用說明：${c.base}/guide`),
         siteMessage(c, bind),
       ]);
     }

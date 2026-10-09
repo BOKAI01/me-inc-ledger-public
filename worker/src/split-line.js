@@ -178,7 +178,7 @@ export function closedCard(env, s) {
 export function tutorialCard(env) {
   return bubble('怎麼開始分帳', null, [
     T('怎麼開始分帳', { weight: 'bold', size: 'md' }),
-    T('1. 建立 LINE 群組，邀請一起分帳的朋友\n2. 在群組裡邀請「記帳小幫手」\n3. 我加入後會出現「建立分帳區」按鈕'),
+    T('1. 建立 LINE 群組，邀請一起分帳的朋友\n2. 在群組裡邀請這個官方帳號（就是我）\n3. 我加入後會出現「建立分帳區」按鈕'),
     note('群組裡的帳只會記到分帳區，不會混進你的個人帳本。結束後，你可以勾選自己負擔的部分轉入帳本。'),
   ]);
 }
