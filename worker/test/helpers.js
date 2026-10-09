@@ -69,13 +69,26 @@ export function fakeWorld({ rows = [], settings = { openingBalance: 0, cycleDay:
       if (u.includes(':batchGet')) {
         return Response.json({ valueRanges: [{ values: [HEADER] }, { values: [['id'], ...w.rows.map(r => [r[0]])] }] });
       }
+      const setRows = () => [['key', 'value'], ...Object.entries(settings).map(([k, v]) => [k, v])];
       if (u.includes('/values/') && !u.includes(':append')) {           // 讀最後一列（values.get）
+        if (decodeURIComponent(u).includes("'Settings'")) return Response.json({ values: setRows() });
         return Response.json({ values: [HEADER, ...w.rows].map(r => r.slice(0, 6)) });
       }
       if (u.includes('/values:batchUpdate')) {                            // 寫入指定列
+        const data = JSON.parse(init.body).data;
+        if (data.every(d => decodeURIComponent(d.range).includes("'Settings'"))) {   // 設定工作表
+          settings = { ...settings };
+          for (const d of data) {
+            const [, col, row] = decodeURIComponent(d.range).match(/!([AB])(\d+)$/);
+            const keys = Object.keys(settings);
+            if (col === 'B') settings[keys[Number(row) - 2]] = d.values[0][0];
+            else settings[d.values[0][0]] = d.values[0][1];
+          }
+          return Response.json({});
+        }
         w.appendCalls++;
         if (appendDelay) await new Promise(r => setTimeout(r, appendDelay));
-        for (const d of JSON.parse(init.body).data) {
+        for (const d of data) {
           const row = Number(decodeURIComponent(d.range).match(/!A(\d+)$/)[1]);
           d.values.forEach((v, k) => { w.rows[row - 2 + k] = v; });
         }

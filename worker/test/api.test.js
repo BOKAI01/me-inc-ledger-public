@@ -131,6 +131,10 @@ test('api: setSetting / setOpening', async () => {
   assert.equal(r.data.cycleDay, 10); assert.equal(r.data.fundTarget, 200000); assert.equal(r.data.openingBalance, 777);
   assert.equal((await s.call('setSetting', { key: 'evil', value: 1 })).ok, false);
   assert.equal((await s.call('setSetting', { key: 'cycleDay', value: 40 })).ok, false);
+  assert.equal(r.data.savingsTarget, 0);
+  await s.call('setSetting', { key: 'savingsTarget', value: 120000 });
+  assert.equal((await s.call('load')).data.savingsTarget, 120000);
+  assert.equal((await s.call('setSetting', { key: 'savingsTarget', value: -5 })).ok, false);
 });
 
 test('api: scanDuplicates', () => {

@@ -225,3 +225,21 @@ test('多筆：全部看不懂、超過上限', async () => {
   await s.say(Array.from({ length: 21 }, (_, i) => `午餐 ${i + 1}`).join('\n'));
   assert.match(s.world.lastText(), /一次最多 20 筆/);
 });
+
+test('儲蓄目標與緊急備用金目標：LINE 指令設定，餘額顯示進度', async () => {
+  const rows = [['1', 'alloc', 'alloc_in', '2026-10-05', 30000, '撥款', '', 0, true, '', 'savings']];
+  const s = setup({ rows, settings: { openingBalance: 100000, cycleDay: 5, fundTarget: 50000 } });
+  await s.say('餘額');
+  assert.match(s.world.lastText(), /儲蓄口袋 \$30,000\n/);
+  assert.match(s.world.lastText(), /儲蓄目標 100000/);                 // 提示可以設定
+  await s.say('儲蓄目標 100,000');
+  let t = s.world.lastText();
+  assert.match(t, /儲蓄目標已設為 \$100,000/);
+  assert.match(t, /儲蓄口袋 \$30,000 \/ \$100,000\n　還差 \$70,000/);
+  await s.say('緊急目標 20000');
+  assert.match(s.world.lastText(), /緊急備用金 \$0 \/ \$20,000/);
+  await s.say('儲蓄目標 0');
+  assert.match(s.world.lastText(), /已取消儲蓄目標/);
+  await s.say('儲蓄目標');
+  assert.match(s.world.lastText(), /請在後面加上金額/);
+});
