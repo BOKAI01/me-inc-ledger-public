@@ -644,9 +644,11 @@ function DuplicateSheet({ groups, loading, onClose, onDelete, onRescan }) {
 /* ============================================================
    設定
    ============================================================ */
-function SettingsSheet({ apiUrl, openingBalance, currentBalance, cycleDay, fundTarget, onChangeTarget, onChangeCycle, onClose, onReset, onSaveOpening, onDedupe }) {
+function SettingsSheet({ apiUrl, openingBalance, currentBalance, cycleDay, fundTarget, savingsTarget, onChangeSavingsTarget, onChangeTarget, onChangeCycle, onClose, onReset, onSaveOpening, onDedupe }) {
   const [tgt, setTgt] = useState(String(fundTarget));
   const [tgtDirty, setTgtDirty] = useState(false);
+  const [sTgt, setSTgt] = useState(String(savingsTarget || 0));
+  const [sTgtDirty, setSTgtDirty] = useState(false);
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState(String(openingBalance));
   const [tmp, setTmp] = useState(cycleDay);
@@ -704,7 +706,18 @@ function SettingsSheet({ apiUrl, openingBalance, currentBalance, cycleDay, fundT
               ${tgtDirty && html`<button class="btn btn-p" style="flex:0 0 auto"
                 onClick=${() => { onChangeTarget(parseFloat(tgt) || 0); setTgtDirty(false); }}>儲存</button>`}
             </div>
-            <div class="mini">口袋卡片的進度條依此計算，填 0 可隱藏</div>
+            <div class="mini">口袋卡片的進度條依此計算</div>
+          </div>
+
+          <div>
+            <div class="lbl" style="margin-bottom:6px">儲蓄目標</div>
+            <div class="row" style="gap:8px">
+              <input class="inp mono" type="number" inputmode="decimal" value=${sTgt}
+                     onInput=${e => { setSTgt(e.target.value); setSTgtDirty(true); }} />
+              ${sTgtDirty && html`<button class="btn btn-p" style="flex:0 0 auto"
+                onClick=${() => { onChangeSavingsTarget(Math.max(0, parseFloat(sTgt) || 0)); setSTgtDirty(false); }}>儲存</button>`}
+            </div>
+            <div class="mini">填 0 代表不設目標；也可以在 LINE 傳「儲蓄目標 100000」</div>
           </div>
 
           <div>
@@ -753,6 +766,7 @@ function App() {
   const [transactions, setTransactions] = useState(() => (cached?.transactions) || []);
   const [openingBalance, setOpeningBalance] = useState(() => cached?.openingBalance || 0);
   const [fundTarget, setFundTarget] = useState(() => Number(cached?.fundTarget) || 50000);
+  const [savingsTarget, setSavingsTarget] = useState(() => Number(cached?.savingsTarget) || 0);
   const [syncedAt, setSyncedAt] = useState(() => cached?.syncedAt || null);
   const [cycleDay, setCycleDay] = useState(() => Number(cached?.cycleDay || localStorage.getItem(K_CYCLE)) || 1);
   const [hasData, setHasData] = useState(() => !!cached);   // 是否已有可顯示的資料
@@ -802,12 +816,13 @@ function App() {
         setTransactions(txns);
         setOpeningBalance(Number(data.openingBalance) || 0);
         setFundTarget(Number(data.fundTarget) || 50000);
+        setSavingsTarget(Math.max(0, Number(data.savingsTarget) || 0));
         const cd = Number(data.cycleDay) || 1;
         setCycleDay(cd);
         localStorage.setItem(K_CYCLE, String(cd));
         const now = Date.now();
         setSyncedAt(now);
-        localStorage.setItem(K_CACHE, JSON.stringify({ transactions: txns, openingBalance: data.openingBalance, cycleDay: cd, fundTarget: data.fundTarget, syncedAt: now }));
+        localStorage.setItem(K_CACHE, JSON.stringify({ transactions: txns, openingBalance: data.openingBalance, cycleDay: cd, fundTarget: data.fundTarget, savingsTarget: data.savingsTarget, syncedAt: now }));
         setHasData(true); setLoadState('ok');
       } catch (e) {
         setLoadState('error');
@@ -1019,6 +1034,13 @@ function App() {
     catch (e) { setFundTarget(prev); showToast('儲存失敗：' + e.message, 'error'); }
   };
 
+  const changeSavingsTarget = async (v) => {
+    const prev = savingsTarget;
+    setSavingsTarget(v);
+    try { await api('setSetting', { key: 'savingsTarget', value: v }); showToast(v > 0 ? '儲蓄目標已更新' : '已取消儲蓄目標'); }
+    catch (e) { setSavingsTarget(prev); showToast('儲存失敗：' + e.message, 'error'); }
+  };
+
   const saveOpening = async (v) => {
     const prev = openingBalance;
     setOpeningBalance(v);
@@ -1149,6 +1171,15 @@ function App() {
                     <div class="mini">本期 ${mv.in !== 0 ? `撥${mv.in > 0 ? '入' : '回'} $${fmt(Math.abs(mv.in))}` : ''}${mv.in !== 0 && mv.spend !== 0 ? '、' : ''}${mv.spend !== 0 ? `動用 $${fmt(mv.spend)}` : ''}</div>`}
                 </div>`;
             })}
+            ${savingsTarget > 0 && html`
+              <div class="divider-t">
+                <div class="between" style="margin-bottom:4px">
+                  <span class="lbl">儲蓄目標</span>
+                  <span class="mono sub">$${fmt(pockets.savings)} / $${fmt(savingsTarget)}</span>
+                </div>
+                <div class="bar"><i style=${{ width: Math.min(100, Math.max(0, (pockets.savings / savingsTarget) * 100)) + '%', background: '#A87B3D' }}></i></div>
+                <div class="mini">${pockets.savings >= savingsTarget ? '已達標 🎉' : `還差 $${fmt(savingsTarget - pockets.savings)}`}</div>
+              </div>`}
             ${fundTarget > 0 && html`
               <div class="divider-t">
                 <div class="between" style="margin-bottom:4px">
@@ -1271,8 +1302,8 @@ function App() {
         onDelete=${deleteDuplicate} onRescan=${scanDuplicates} onClose=${() => setShowDup(false)} />`}
 
       ${showSettings && html`<${SettingsSheet} apiUrl=${apiUrl} openingBalance=${openingBalance}
-        currentBalance=${currentBalance} cycleDay=${cycleDay} fundTarget=${fundTarget}
-        onChangeTarget=${changeTarget} onChangeCycle=${changeCycle} onSaveOpening=${saveOpening} onDedupe=${scanDuplicates}
+        currentBalance=${currentBalance} cycleDay=${cycleDay} fundTarget=${fundTarget} savingsTarget=${savingsTarget}
+        onChangeTarget=${changeTarget} onChangeSavingsTarget=${changeSavingsTarget} onChangeCycle=${changeCycle} onSaveOpening=${saveOpening} onDedupe=${scanDuplicates}
         onClose=${() => setShowSettings(false)}
         onReset=${() => { localStorage.removeItem(K_API); setApiUrl(null); }} />`}
     </div>`;
