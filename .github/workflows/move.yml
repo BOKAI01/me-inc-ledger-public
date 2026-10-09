@@ -1,0 +1,59 @@
+name: Move uploaded files and deploy
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/move.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: public-worker
+  cancel-in-progress: false
+
+jobs:
+  move-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 把上傳到最外層的檔案移進 worker 資料夾
+        run: |
+          set -e
+          mkdir -p worker/src worker/test worker/page worker/scripts
+          mv_if() { if [ -f "$1" ]; then git mv -f "$1" "$2"; echo "moved $1 -> $2"; fi; }
+          for f in api crypto entry google index ledger line oauth parse schema split-core split-do split-line split-page split-web; do mv_if "$f.js" "worker/src/$f.js"; done
+          for f in api.test.js flow.test.js helpers.js oauth.test.js split.test.js unit.test.js; do mv_if "$f" "worker/test/$f"; done
+          mv_if split.html worker/page/split.html
+          mv_if build-page.mjs worker/scripts/build-page.mjs
+          mv_if package.json worker/package.json
+          mv_if wrangler.toml worker/wrangler.toml
+          grep -q 'LIFF_ID = "2011943819-wRnnwyq5"' worker/wrangler.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --cached --quiet; then git commit -m "Move uploaded files into worker/"; git push; fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 測試
+        working-directory: worker
+        run: npm test
+
+      - name: 準備 KV
+        working-directory: worker
+        run: |
+          TITLE=LEDGER_PUBLIC_KV
+          ID=$(npx -y wrangler@4 kv namespace list | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const a=JSON.parse(s.slice(s.indexOf('[')));const n=a.find(x=>x.title==='$TITLE'||x.title.endsWith('$TITLE'));process.stdout.write(n?n.id:'')})")
+          test -n "$ID"
+          sed -i "s/__KV_ID__/$ID/" wrangler.toml
+
+      - name: 部署到 Cloudflare
+        working-directory: worker
+        run: npx -y wrangler@4 deploy
