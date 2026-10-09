@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>分帳網頁｜記帳小幫手</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js" charset="utf-8"></script>
+<style>
+/* 與群組分帳原型相同的設計：橘色＝群組共用的分帳區，綠色＝個人帳本 */
+:root{
+  --bg:#edf0f3; --surface:#ffffff; --surface-2:#f5f6f8; --line:#dce1e7; --fg:#1d252e; --muted:#5f6b78;
+  --split:#cf6f22; --split-soft:#fbe9d9; --own:#23905a; --own-soft:#ddf2e5;
+  --accent:#2d68c4; --good:#23905a; --warn:#b97b0c; --bad:#c03d3d;
+  --font:"Noto Sans TC",system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#11151a; --surface:#1a2027; --surface-2:#212931; --line:#2e3741; --fg:#e4e8ed; --muted:#9aa5b1;
+  --split:#ef9550; --split-soft:#3a2716; --own:#4cc283; --own-soft:#173426;
+  --accent:#6ea3f0; --good:#4cc283; --warn:#e0a83a; --bad:#ec6c6c; color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font-family:var(--font);font-size:14px;line-height:1.55;padding:0 12px;padding-block:calc(12px + env(safe-area-inset-top,0px)) calc(32px + env(safe-area-inset-bottom,0px))}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.panel{max-width:720px;margin:0 auto;background:var(--surface);border:1px solid var(--line);border-radius:16px;display:flex;flex-direction:column;min-width:0}
+.panel-h{padding:14px 16px 0;display:flex;flex-direction:column;gap:12px}
+.title{display:flex;flex-direction:column;gap:2px}
+.badge{align-self:flex-start;font-size:12px;font-weight:700;color:var(--split);background:var(--split-soft);padding:2px 10px;border-radius:999px}
+.title h1{margin:0;font-size:18px;text-wrap:balance}
+.title small{color:var(--muted);font-size:12.5px}
+.steps{display:flex;flex-wrap:wrap;gap:6px;list-style:none;margin:0;padding:0}
+.steps li{font-size:12px;padding:3px 10px 3px 8px;border-radius:999px;background:var(--surface-2);color:var(--muted);display:flex;gap:6px;align-items:center}
+.steps li::before{content:"";width:8px;height:8px;border-radius:50%;border:1.5px solid currentColor}
+.steps li.on{color:var(--good);background:var(--own-soft)}
+.steps li.on::before{background:currentColor}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);overflow-x:auto}
+.tabs button{border:0;background:none;padding:9px 12px;font-size:14px;color:var(--muted);border-bottom:2px solid transparent;white-space:nowrap}
+.tabs button[aria-selected="true"]{color:var(--fg);font-weight:700;border-bottom-color:var(--split)}
+.panel-b{padding:16px;display:flex;flex-direction:column;gap:14px}
+.empty{color:var(--muted);text-align:center;padding:28px 12px;border:1px dashed var(--line);border-radius:12px;display:flex;flex-direction:column;gap:10px;align-items:center}
+.hint{font-size:12.5px;color:var(--muted);margin:0}
+.tbl-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{font-size:12px;color:var(--muted);font-weight:500;letter-spacing:.03em}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pos{color:var(--good)} .neg{color:var(--bad)}
+.item{border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.item.me{border-color:var(--split)}
+.item-top{display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap}
+.item-top b{font-size:15px}
+.item-top .num{font-weight:700;font-variant-numeric:tabular-nums}
+.meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12.5px;color:var(--muted)}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:7px 12px;font-size:13.5px}
+.btn.sm{padding:4px 9px;font-size:12.5px}
+a.btn{text-decoration:none;color:inherit;display:inline-flex;align-items:center}
+a.btn.own,a.btn.primary{color:#fff}
+.btn.primary{background:var(--split);border-color:var(--split);color:#fff;font-weight:700}
+.btn.own{background:var(--own);border-color:var(--own);color:#fff;font-weight:700}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.pill{font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.pill.wait{color:var(--muted)} .pill.paid{color:var(--warn)} .pill.recv{color:var(--good)} .pill.pend{color:var(--split)}
+.editor{background:var(--surface-2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.erow{display:grid;grid-template-columns:24px minmax(0,1fr) 120px;gap:8px;align-items:center}
+input[type=number],input[type=text],.editor select{border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:8px;padding:7px 9px;font:inherit;width:100%;min-width:0;font-variant-numeric:tabular-nums}
+.sumline{font-size:13px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.form{border:1.5px solid var(--split);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;background:var(--split-soft)}
+.form h3{margin:0;font-size:14px;color:var(--split)}
+.form .grid{display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px}
+.form label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)}
+.form label.chk{flex-direction:row;align-items:center;gap:6px;color:var(--fg);font-size:13px}
+.tr{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.tr-top{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.tr-top b{font-variant-numeric:tabular-nums}
+.acct{font-family:var(--mono);font-size:13px}
+.sec-h{font-size:13px;font-weight:700;margin:4px 0 0}
+.check{display:flex;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:10px}
+.check input{width:18px;height:18px;flex:none}
+.check .grow{flex:1;min-width:0}
+.check .grow small{display:block;color:var(--muted);font-size:12px}
+.check b{font-variant-numeric:tabular-nums}
+.check.doneit{opacity:.55}
+.total{display:flex;justify-content:space-between;font-weight:700;font-size:15px;padding:4px 2px}
+.note-own{background:var(--own-soft);color:var(--fg);border-radius:10px;padding:10px 12px;font-size:13px}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13px;max-width:calc(100% - 32px);text-align:center;z-index:5}
+.loading{color:var(--muted);text-align:center;padding:40px 0}
+</style>
+</head>
+<body>
+<main class="panel" id="app"><div class="loading">載入中…</div></main>
+<div class="toast" id="toast" hidden></div>
+<script>
+var CFG = /*__CFG__*/null;
+var V = null, sid = '', U = { tab: 'items', editing: null, form: null, saved: undefined, reveal: {}, busy: false };
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
+function md(d) { return String(d).slice(5).replace('-', '/'); }
+function ymd(d) { return String(d || '').replace(/-/g, '/'); }
+function nm(id) { var m = V.members.filter(function (x) { return x.id === id; })[0]; return m ? m.name : '成員'; }
+function isTemp(id) { var m = V.members.filter(function (x) { return x.id === id; })[0]; return !!(m && m.temp); }
+function canFor(owner) { return V.me === owner || (isTemp(owner) && V.me === V.creator); }
+var CATS = { food: '食・餐飲', cloth: '衣・形象', housing: '住・後勤', transport: '行・移動', leisure: '娛・文化', other_out: '其他' };
+function cat(c) { return CATS[c] || '其他'; }
+var tt;
+function toast(t) { var el = document.getElementById('toast'); el.textContent = t; el.hidden = false; clearTimeout(tt); tt = setTimeout(function () { el.hidden = true; }, 2800); }
+function fatal(title, body) { document.getElementById('app').innerHTML = '<div class="panel-b"><div class="empty"><b>' + esc(title) + '</b><span>' + body + '</span></div></div>'; }
+
+function params() {
+  var q = new URLSearchParams(location.search);
+  var st = q.get('liff.state');
+  if (st) { var i = st.indexOf('?'); if (i >= 0) { var q2 = new URLSearchParams(st.slice(i + 1)); q2.forEach(function (v, k) { if (!q.has(k)) q.set(k, v); }); } }
+  return q;
+}
+
+function api(action, extra) {
+  var body = Object.assign({ idToken: liff.getIDToken(), sid: sid, action: action }, extra || {});
+  return fetch('/split/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (j.error === 'auth') { liff.logout(); liff.login({ redirectUri: location.href }); throw new Error('重新登入中…'); }
+      if (!j.ok) throw new Error(j.error || '發生錯誤');
+      return j.data;
+    });
+}
+function act(action, extra, msg) {
+  if (U.busy) return Promise.resolve();
+  U.busy = true;
+  return api(action, extra).then(function (d) { U.busy = false; if (d && d.sid) V = d; if (msg) toast(msg); render(); return d; })
+    .catch(function (e) { U.busy = false; toast(e.message); });
+}
+
+/* ---------- 畫面 ---------- */
+function steps() {
+  var T = V.transfers;
+  var list = [['建立分帳區', true], ['成員加入', V.members.length > 1], ['記帳', V.entries.some(function (e) { return e.status === 'ok'; })],
+    ['結算', !!T], ['收款確認', !!T && T.every(function (t) { return t.recv; })], ['結束分帳', V.status === 'closed'], ['轉入帳本', V.transferred.length > 0]];
+  return '<ol class="steps" aria-label="流程進度">' + list.map(function (x) { return '<li class="' + (x[1] ? 'on' : '') + '">' + x[0] + '</li>'; }).join('') + '</ol>';
+}
+function render() {
+  if (!V) return;
+  var tabs = [['items', '分帳明細'], ['settle', '結算與收款'], ['transfer', '轉入我的帳本']];
+  var state = V.status === 'closed' ? '已結束' : V.status === 'settling' ? '結算中' : '進行中';
+  var body = V.member ? { items: pItems, settle: pSettle, transfer: pTransfer }[U.tab]() : pJoin();
+  document.getElementById('app').innerHTML =
+    '<div class="panel-h"><div class="title"><span class="badge">分帳區・群組共用</span><h1>' + esc(V.name) + '</h1>' +
+    '<small>' + state + '・建立者 ' + esc(nm(V.creator)) + '・以 ' + esc(V.member ? nm(V.me) : '訪客') + ' 的身分檢視</small></div>' + steps() +
+    (V.member ? '<div class="tabs" role="tablist">' + tabs.map(function (t) { return '<button role="tab" aria-selected="' + (U.tab === t[0]) + '" data-act="tab" data-arg="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>' : '') +
+    '</div><div class="panel-b">' + body + '</div>';
+  if (U.editing) updateSum();
+}
+function pJoin() {
+  if (V.status === 'closed') return '<div class="empty">這個分帳區已經結束，你不是成員，無法查看明細。</div>';
+  return '<div class="empty"><b>你還不是這個分帳區的成員</b><span>加入後就能一起記帳、查看結算。</span><button class="btn primary" data-act="join">加入分帳</button></div>';
+}
+function pItems() {
+  var b = V.balances;
+  var bal = '<div class="tbl-wrap"><table><thead><tr><th>成員</th><th class="num">先付</th><th class="num">應負擔</th><th class="num">淨額</th></tr></thead><tbody>' +
+    V.members.map(function (m) { var x = b[m.id] || { paid: 0, share: 0 }, n = x.paid - x.share;
+      return '<tr><td>' + esc(m.name) + (m.temp ? '（臨時）' : '') + (m.id === V.me ? '（我）' : '') + '</td><td class="num">' + money(x.paid) + '</td><td class="num">' + money(x.share) + '</td><td class="num ' + (n > 0 ? 'pos' : n < 0 ? 'neg' : '') + '">' + (n > 0 ? '+' : n < 0 ? '−' : '') + money(Math.abs(n)) + '</td></tr>'; }).join('') +
+    '</tbody></table></div><p class="hint">淨額＝先付－應負擔。正數是應收，負數是應付。只計入已確認的項目。</p>';
+  var list = V.entries.slice().reverse();
+  var items = list.length ? list.map(itemHTML).join('') : '<div class="empty">還沒有項目。<span>在群組傳「+晚餐 3000」就能記一筆。</span></div>';
+  var temp = V.status === 'closed' ? '' : '<div class="btns"><button class="btn sm" data-act="temp">新增臨時成員</button></div>';
+  return bal + temp + items;
+}
+function itemHTML(e) {
+  var editing = U.editing === e.id, open = V.status !== 'closed';
+  var canEdit = open && (V.me === e.by || V.me === V.creator);
+  var sh = e.parts.map(function (m) { return esc(nm(m)) + ' ' + money(e.shares[m]); }).join('、');
+  var btns = '';
+  if (open && !editing) {
+    btns = '<div class="btns">' +
+      (e.status === 'pending' && V.me === e.by ? '<button class="btn sm primary" data-act="confirm" data-arg="' + e.id + '">確認記入</button>' : '') +
+      (canEdit ? '<button class="btn sm" data-act="edit" data-arg="' + e.id + '">修改分攤</button><button class="btn sm" data-act="del" data-arg="' + e.id + '">刪除</button>' : '') + '</div>';
+  }
+  var ed = '';
+  if (editing) {
+    ed = '<div class="editor"><label class="sumline"><span>先付款的人</span><select id="ed-payer" style="width:auto">' +
+      V.members.map(function (m) { return '<option value="' + esc(m.id) + '"' + (m.id === e.payer ? ' selected' : '') + '>' + esc(m.name) + '</option>'; }).join('') + '</select></label>' +
+      V.members.map(function (m, i) { var on = e.parts.indexOf(m.id) >= 0;
+        return '<div class="erow"><input type="checkbox" id="ed-on-' + i + '" data-mid="' + esc(m.id) + '"' + (on ? ' checked' : '') + ' aria-label="' + esc(m.name) + ' 是否分攤"><label for="ed-v-' + i + '">' + esc(m.name) + '</label><input type="number" inputmode="numeric" min="0" step="1" id="ed-v-' + i + '" value="' + (on ? e.shares[m.id] : 0) + '"></div>'; }).join('') +
+      '<div class="sumline"><span>加總</span><span id="ed-sum" data-total="' + e.amount + '"></span></div>' +
+      '<div class="btns"><button class="btn" data-act="even" data-arg="' + e.id + '">平均分攤</button><button class="btn primary" data-act="save" data-arg="' + e.id + '">儲存</button><button class="btn" data-act="edit" data-arg="">取消</button></div></div>';
+  }
+  return '<div class="item' + (editing ? ' me' : '') + '" id="it-' + e.id + '"><div class="item-top"><b>' + esc(e.desc) + '</b><span class="num">' + money(e.amount) + '</span></div>' +
+    '<div class="meta"><span>' + cat(e.cat) + '・' + md(e.date) + '</span><span>先付：' + esc(nm(e.payer)) + '</span><span>記錄：' + esc(nm(e.by)) + '</span>' +
+    (e.status === 'pending' ? '<span class="pill pend">待確認</span>' : '') + (e.mode === 'custom' ? '<span>自訂金額</span>' : '') + '</div>' +
+    '<div class="meta"><span>分攤：' + sh + '</span></div>' + btns + ed + '</div>';
+}
+function updateSum() {
+  var el = document.getElementById('ed-sum'); if (!el) return;
+  var total = +el.dataset.total, sum = 0;
+  V.members.forEach(function (m, i) { if (document.getElementById('ed-on-' + i).checked) sum += Math.round(Number(document.getElementById('ed-v-' + i).value) || 0); });
+  var diff = total - sum;
+  el.innerHTML = money(sum) + ' / ' + money(total) + ' ' + (diff === 0 ? '<span class="pos">剛好</span>' : '<span class="neg">' + (diff > 0 ? '還差 ' : '多了 ') + money(Math.abs(diff)) + '</span>');
+}
+function methodHTML(mid) {
+  var m = V.methods[mid];
+  if (!m) return '<span class="hint">尚未設定收款方式</span>';
+  if (m.type === 'linepay') return 'LINE Pay：請轉給 ' + esc(nm(mid)) + '（需在 LINE Pay 自行選人並輸入金額）';
+  if (m.type === 'cash') return '現金：請當面交給 ' + esc(nm(mid));
+  if (m.wiped || !m.acct) return '<span class="hint">銀行帳號已在分帳結束時刪除</span>';
+  var k = mid, show = U.reveal[k];
+  return '銀行轉帳 <span class="acct">' + esc(m.bank) + '-' + (show ? esc(m.acct) : '****' + esc(m.last4)) + '</span> ' +
+    '<button class="btn sm" data-act="reveal" data-arg="' + esc(k) + '">' + (show ? '隱藏' : '顯示') + '</button> ' +
+    '<button class="btn sm" data-act="copy" data-arg="' + esc(k) + '">複製帳號</button>';
+}
+function pSettle() {
+  var form = '';
+  if (U.form) {
+    var c = U.form, sv = U.saved;
+    form = '<div class="form"><h3>' + esc(nm(c)) + ' 的收款帳號</h3>' +
+      '<p class="hint">只用在這個分帳區，分帳結束時立即刪除。群組卡片只顯示末 4 碼。</p>' +
+      (c === V.me && sv ? '<button class="btn" data-act="useSaved">沿用上次：' + esc(sv.bank) + '-****' + esc(sv.last4) + '</button>' : '') +
+      '<div class="grid"><label>銀行代碼<input type="text" id="f-bank" inputmode="numeric" maxlength="3" placeholder="822"></label><label>帳號<input type="text" id="f-acct" inputmode="numeric" maxlength="20" placeholder="1234 5678 9012"></label></div>' +
+      (c === V.me && V.bound ? '<label class="chk"><input type="checkbox" id="f-rem"> 記住我的收款帳號（存在我自己的 Google 試算表，下次一鍵帶入）</label>' : '') +
+      '<div class="btns"><button class="btn primary" data-act="saveBank">儲存</button><button class="btn" data-act="closeForm">取消</button></div></div>';
+  }
+  var T = V.transfers;
+  if (!T) return form + '<div class="empty">還沒有結算。<span>在群組傳「結算」，就會算出最少的轉帳方式。</span></div>';
+  if (!T.length) return form + '<div class="empty">大家剛好打平，不需要轉帳。</div>';
+  var open = V.status !== 'closed';
+  var tos = []; T.forEach(function (t) { if (tos.indexOf(t.to) < 0) tos.push(t.to); });
+  var secs = tos.map(function (c) {
+    var setters = open && canFor(c) ? '<div class="btns">' + (V.methods[c] ? '<span class="hint">變更：</span>' : '') +
+      '<button class="btn sm" data-act="pick" data-arg="' + esc(c) + '|bank">銀行轉帳</button><button class="btn sm" data-act="pick" data-arg="' + esc(c) + '|linepay">LINE Pay</button><button class="btn sm" data-act="pick" data-arg="' + esc(c) + '|cash">現金</button></div>' : '';
+    var rows = T.filter(function (t) { return t.to === c; }).map(function (t) {
+      var pill = t.recv ? '<span class="pill recv">已收到</span>' : t.paid ? '<span class="pill paid">已付款，待確認</span>' : '<span class="pill wait">未付</span>';
+      var bs = '';
+      if (open && !t.recv) {
+        bs = '<div class="btns">' + (!t.paid && canFor(t.from) ? '<button class="btn sm" data-act="paid" data-arg="' + esc(t.from) + '|' + esc(t.to) + '">我已付款</button>' : '') +
+          (canFor(t.to) ? '<button class="btn sm primary" data-act="recv" data-arg="' + esc(t.from) + '|' + esc(t.to) + '">已收到</button>' : '') + '</div>';
+      }
+      return '<div class="tr"><div class="tr-top"><span>' + esc(nm(t.from)) + ' → ' + esc(nm(t.to)) + '</span><b>' + money(t.amount) + '</b></div><div class="tr-top"><span class="hint">' + (t.from === V.me ? '你要付款' : t.to === V.me ? '你要收款' : '') + '</span>' + pill + '</div>' + bs + '</div>';
+    }).join('');
+    return '<h2 class="sec-h">收款人：' + esc(nm(c)) + (c === V.me ? '（我）' : '') + '</h2><div>' + methodHTML(c) + '</div>' + setters + rows;
+  }).join('');
+  var all = T.every(function (t) { return t.recv; });
+  return form + '<p class="hint">結算：' + T.length + ' 筆轉帳就能結清。付款人按「我已付款」，收款人按「已收到」才算結清。</p>' + secs +
+    (all ? '<div class="note-own">全部結清了。建立者可以在群組傳「結束分帳」。</div>' : '');
+}
+function pTransfer() {
+  if (V.status !== 'closed') return '<div class="empty">分帳結束後才能轉入。<span>建立者 ' + esc(nm(V.creator)) + ' 在群組傳「結束分帳」後，這裡就會開放。</span></div>';
+  if (!V.bound) {
+    var u = 'https://line.me/R/oaMessage/' + encodeURIComponent(CFG.basicId) + '/?' + encodeURIComponent('開始');
+    return '<div class="empty"><b>你還沒開通個人帳本</b><span>開通後，帳本會建立在你自己的 Google 雲端硬碟，大約 1 分鐘。完成後回到這裡就能轉入。</span>' +
+      (CFG.basicId ? '<a class="btn own" href="' + esc(u) + '">私訊記帳小幫手開通</a>' : '') + '</div>';
+  }
+  var mine = V.mine;
+  if (!mine.length) return '<div class="empty">你在這個分帳區沒有需要負擔的項目。</div>';
+  var done = V.transferred;
+  var left = mine.filter(function (x) { return done.indexOf(x.id) < 0; });
+  var sum = left.reduce(function (a, x) { return a + x.share; }, 0);
+  return '<p class="hint">只轉入<b>你負擔的部分</b>，記為支出。代墊和還款屬於轉帳，不會寫入。資料只會寫進你自己的試算表。</p>' +
+    mine.map(function (x) { var d = done.indexOf(x.id) >= 0;
+      return '<label class="check' + (d ? ' doneit' : '') + '"><input type="checkbox" data-tr="' + x.id + '"' + (d ? ' checked disabled' : ' checked') + '><span class="grow">' + esc(x.desc) + '<small>' + cat(x.cat) + '・' + md(x.date) + '・總額 ' + money(x.amount) + (d ? '・已轉入' : '') + '</small></span><b>' + money(x.share) + '</b></label>'; }).join('') +
+    '<div class="total"><span>尚未轉入</span><span>' + money(sum) + '</span></div>' +
+    '<div class="btns"><button class="btn own" data-act="transfer"' + (left.length ? '' : ' disabled') + '>寫入我的帳本</button>' +
+    (V.site ? '<a class="btn" href="' + esc(V.site) + '">開啟我的帳本網站</a>' : '') + '</div>';
+}
+
+/* ---------- 操作 ---------- */
+var ACT = {
+  tab: function (a) { U.tab = a; U.editing = null; render(); },
+  join: function () { act('join', null, '已加入分帳'); },
+  temp: function () {
+    var box = document.createElement('div');
+    box.className = 'form';
+    box.innerHTML = '<h3>新增臨時成員</h3><p class="hint">不在群組裡、或沒用 LINE 的朋友。他的收付款由建立者代為操作。</p><input type="text" id="t-name" maxlength="10" placeholder="名字"><div class="btns"><button class="btn primary" data-act="tempSave">新增</button><button class="btn" data-act="tab" data-arg="items">取消</button></div>';
+    var b = document.querySelector('.panel-b'); b.insertBefore(box, b.firstChild); document.getElementById('t-name').focus();
+  },
+  tempSave: function () { var v = document.getElementById('t-name').value.trim(); if (!v) return toast('請輸入名字'); act('addTemp', { name: v }, '已新增「' + v + '」'); },
+  confirm: function (id) { act('confirm', { eid: id }, '已記入分帳區'); },
+  edit: function (id) { U.editing = id || null; render(); if (id) { var el = document.getElementById('it-' + id); if (el) el.scrollIntoView({ block: 'start' }); } },
+  del: function (id) {
+    var btn = document.querySelector('[data-act="del"][data-arg="' + id + '"]');
+    if (btn && !btn.dataset.sure) { btn.dataset.sure = '1'; btn.textContent = '確定刪除？'; btn.classList.add('primary'); return; }
+    act('delete', { eid: id }, '已刪除');
+  },
+  even: function (id) {
+    var e = V.entries.filter(function (x) { return x.id === id; })[0];
+    var payer = document.getElementById('ed-payer').value, parts = [];
+    V.members.forEach(function (m, i) { if (document.getElementById('ed-on-' + i).checked) parts.push(m.id); });
+    if (!parts.length) return toast('至少要有一位分攤的人');
+    var n = parts.length, base = Math.floor(e.amount / n), r = e.amount - base * n, out = {};
+    parts.forEach(function (p) { out[p] = base; });
+    var order = parts.indexOf(payer) >= 0 ? [payer].concat(parts.filter(function (p) { return p !== payer; })) : parts;
+    for (var k = 0; k < r; k++) out[order[k % n]] += 1;
+    V.members.forEach(function (m, i) { document.getElementById('ed-v-' + i).value = out[m.id] || 0; });
+    updateSum();
+  },
+  save: function (id) {
+    var shares = {};
+    V.members.forEach(function (m, i) { if (document.getElementById('ed-on-' + i).checked) shares[m.id] = Math.round(Number(document.getElementById('ed-v-' + i).value) || 0); });
+    U.editing = null;
+    act('edit', { eid: id, payer: document.getElementById('ed-payer').value, shares: shares }, '已儲存').then(function () { if (!V) return; });
+  },
+  pick: function (a) {
+    var p = a.split('|'), c = p[0], type = p[1];
+    if (type === 'bank') {
+      U.form = c; render(); window.scrollTo(0, 0);
+      if (c === V.me && U.saved === undefined && V.bound) api('saved').then(function (d) { U.saved = d; if (U.form) render(); }).catch(function () { U.saved = null; });
+      return;
+    }
+    act('setMethod', { mid: c, type: type }, type === 'cash' ? '已設定：現金收款' : '已設定：LINE Pay 收款');
+  },
+  closeForm: function () { U.form = null; render(); },
+  saveBank: function () {
+    var bank = document.getElementById('f-bank').value.trim(), acct = document.getElementById('f-acct').value.replace(/[\s-]/g, '');
+    if (!/^\d{3}$/.test(bank)) return toast('銀行代碼是 3 位數字，例如 822');
+    if (!/^\d{8,16}$/.test(acct)) return toast('帳號請輸入 8 到 16 位數字');
+    var rem = document.getElementById('f-rem');
+    var c = U.form;
+    act('setMethod', { mid: c, type: 'bank', bank: bank, acct: acct, remember: !!(rem && rem.checked) }, rem && rem.checked ? '已儲存，並記在你的帳本' : '已儲存，只用在這個分帳區')
+      .then(function () { U.form = null; if (rem && rem.checked) U.saved = { bank: bank, last4: acct.slice(-4) }; render(); });
+  },
+  useSaved: function () { act('useSaved', null, '已沿用上次的收款帳號').then(function () { U.form = null; render(); }); },
+  reveal: function (k) { U.reveal[k] = !U.reveal[k]; render(); },
+  copy: function (k) {
+    var m = V.methods[k], full = m.bank + '-' + m.acct;
+    try { navigator.clipboard.writeText(full).then(function () { toast('已複製 ' + full); }, function () { toast('帳號：' + full); }); } catch (e) { toast('帳號：' + full); }
+  },
+  paid: function (a) { var p = a.split('|'); act('paid', { from: p[0], to: p[1] }, '已標記為已付款'); },
+  recv: function (a) { var p = a.split('|'); act('recv', { from: p[0], to: p[1] }, '已確認收到'); },
+  transfer: function () {
+    var eids = Array.prototype.map.call(document.querySelectorAll('input[data-tr]:checked:not(:disabled)'), function (x) { return x.dataset.tr; });
+    if (!eids.length) return toast('請至少勾選一筆');
+    act('transfer', { eids: eids }).then(function (d) { if (d && d.wrote) toast('已寫入 ' + d.wrote.count + ' 筆、共 ' + money(d.wrote.total) + ' 到你的帳本'); });
+  }
+};
+document.addEventListener('click', function (ev) {
+  var b = ev.target.closest('[data-act]'); if (!b) return;
+  var fn = ACT[b.dataset.act]; if (!fn) return;
+  ev.preventDefault(); fn(b.dataset.arg || '');
+});
+document.addEventListener('input', function (ev) { if (ev.target.id && ev.target.id.indexOf('ed-') === 0) updateSum(); });
+document.addEventListener('change', function (ev) { if (ev.target.id && ev.target.id.indexOf('ed-on-') === 0) updateSum(); });
+
+/* ---------- 啟動 ---------- */
+(function boot() {
+  if (!CFG || !CFG.liffId) return fatal('分帳網頁尚未啟用', '請管理員設定 LIFF_ID。');
+  if (!window.liff) return fatal('無法載入 LINE 元件', '請確認網路連線後重新開啟。');
+  liff.init({ liffId: CFG.liffId }).then(function () {
+    if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+    var q = params();
+    sid = q.get('sid') || '';
+    U.tab = ['items', 'settle', 'transfer'].indexOf(q.get('tab')) >= 0 ? q.get('tab') : 'items';
+    if (!sid) return fatal('連結不完整', '請從 LINE 群組裡的分帳卡片重新開啟。');
+    return api('load').then(function (d) {
+      V = d;
+      if (q.get('e') && V.entries.some(function (x) { return x.id === q.get('e'); }) && V.status !== 'closed') U.editing = q.get('e');
+      render();
+      if (q.get('m') === 'bank' && V.member && V.status !== 'closed') ACT.pick(V.me + '|bank');
+      if (U.editing) { var el = document.getElementById('it-' + U.editing); if (el) el.scrollIntoView({ block: 'start' }); }
+    });
+  }).catch(function (e) { fatal('無法開啟分帳網頁', esc(e.message || String(e))); });
+})();
+</script>
+</body>
+</html>
