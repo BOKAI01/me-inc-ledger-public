@@ -39,6 +39,9 @@ const say = (label, msg, primary) => ({ type: 'button', style: primary ? 'primar
   ...(primary ? { color: ORANGE } : {}), action: { type: 'message', label, text: msg } });
 const link = (label, uri, primary) => ({ type: 'button', style: primary ? 'primary' : 'secondary', height: 'sm',
   ...(primary ? { color: ORANGE } : {}), action: { type: 'uri', label, uri } });
+/** LINE 錢包分頁（LINE 官方網址；LINE Pay 轉帳入口在這裡） */
+export const WALLET_URL = 'https://line.me/R/nv/wallet';
+const copyBtn = (label, textToCopy) => ({ type: 'button', style: 'secondary', height: 'sm', action: { type: 'clipboard', label, clipboardText: textToCopy } });
 const head = (s) => ({ type: 'box', layout: 'horizontal', backgroundColor: SOFT, paddingAll: '12px', contents: [
   T(`分帳區・${s.name}`, { color: ORANGE, weight: 'bold', flex: 4 }),
   T('群組共用', { color: ORANGE, size: 'xs', align: 'end', gravity: 'center', flex: 2 }),
@@ -117,7 +120,7 @@ function methodText(s, mid) {
   const m = s.methods[mid];
   if (!m) return '尚未設定收款方式';
   if (m.type === 'bank') return m.wiped ? '銀行轉帳（帳號已刪除）' : `銀行轉帳 ${m.bank}-****${m.last4}`;
-  if (m.type === 'linepay') return `LINE Pay：請轉給 ${memberName(s, mid)}`;
+  if (m.type === 'linepay') return `LINE Pay：在與 ${memberName(s, mid)} 的聊天室按「＋」→「轉帳」，貼上金額即可`;
   return `現金：請當面交給 ${memberName(s, mid)}`;
 }
 
@@ -138,6 +141,12 @@ export function settleCard(env, s, accts = {}) {
       const st = t.recv ? '已收到' : t.paid ? '已付款，待確認' : '未付';
       body.push(kv(`${memberName(s, t.from)} → ${memberName(s, t.to)}`, money(t.amount), { r: { weight: 'bold' } }));
       body.push(T(st, { size: 'xs', color: t.recv ? GREEN : t.paid ? '#B97B0C' : MUTED }));
+      if (!t.recv && !t.paid && !closed && s.methods[c]?.type === 'linepay') {
+        body.push({ type: 'box', layout: 'horizontal', spacing: 'sm', contents: [
+          { ...copyBtn('複製金額', String(t.amount)), flex: 1 },
+          { ...link('開啟 LINE 錢包', WALLET_URL), flex: 1 },
+        ] });
+      }
       if (!t.recv && !closed) {
         const f = `&s=${s.sid}&f=${t.from}&t=${t.to}`;
         body.push({ type: 'box', layout: 'horizontal', spacing: 'sm', contents: [
