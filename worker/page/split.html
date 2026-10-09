@@ -97,7 +97,7 @@ input[type=number],input[type=text],.editor select{border:1px solid var(--line);
 <div class="toast" id="toast" hidden></div>
 <script>
 var CFG = /*__CFG__*/null;
-var V = null, sid = '', U = { tab: 'items', editing: null, form: null, saved: undefined, reveal: {}, busy: false };
+var V = null, sid = '', U = { tab: 'items', editing: null, form: null, adding: false, saved: undefined, reveal: {}, busy: false };
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
@@ -167,8 +167,39 @@ function pItems() {
     '</tbody></table></div><p class="hint">淨額＝先付－應負擔。正數是應收，負數是應付。只計入已確認的項目。</p>';
   var list = V.entries.slice().reverse();
   var items = list.length ? list.map(itemHTML).join('') : '<div class="empty">還沒有項目。<span>在群組傳「+晚餐 3000」就能記一筆。</span></div>';
-  var temp = V.status === 'closed' ? '' : '<div class="btns"><button class="btn sm" data-act="temp">新增臨時成員</button></div>';
-  return bal + temp + items;
+  var temp = V.status === 'closed' ? '' : '<div class="btns"><button class="btn primary" data-act="addOpen">＋ 記一筆</button><button class="btn sm" data-act="temp">新增臨時成員</button></div>';
+  return (U.adding && V.status !== 'closed' ? addForm() : '') + bal + temp + items;
+}
+function addForm() {
+  return '<div class="form" id="add-form"><h3>記一筆</h3>' +
+    '<div class="grid"><label>項目<input type="text" id="a-desc" maxlength="30" placeholder="晚餐"></label><label>總金額<input type="number" id="a-amt" inputmode="numeric" min="1" step="1" placeholder="3000"></label></div>' +
+    '<div class="sumline"><label for="a-payer" style="color:var(--fg);font-size:13px">誰先付了這筆錢</label><select id="a-payer" style="width:auto;border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:8px;padding:6px 8px;font:inherit">' +
+    V.members.map(function (m) { return '<option value="' + esc(m.id) + '"' + (m.id === V.me ? ' selected' : '') + '>' + esc(m.name) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="hint">誰分攤（預設平均，可改每人金額）</div>' +
+    V.members.map(function (m, i) { return '<div class="erow"><input type="checkbox" id="a-on-' + i + '" checked aria-label="' + esc(m.name) + ' 是否分攤"><label for="a-v-' + i + '">' + esc(m.name) + '</label><input type="number" inputmode="numeric" min="0" step="1" id="a-v-' + i + '" value="0"></div>'; }).join('') +
+    '<div class="sumline"><span>加總</span><span id="a-sum"></span></div>' +
+    '<div class="btns"><button class="btn primary" data-act="addSave">記入分帳區</button><button class="btn" data-act="addClose">取消</button></div>' +
+    '<p class="hint">從網頁記的帳會直接記入，不會在群組另外通知。</p></div>';
+}
+function addSplit() {
+  var amt = Math.round(Number(document.getElementById('a-amt').value) || 0), payer = document.getElementById('a-payer').value, parts = [];
+  V.members.forEach(function (m, i) { if (document.getElementById('a-on-' + i).checked) parts.push(m.id); });
+  var out = {}, n = parts.length;
+  if (n && amt > 0) {
+    var base = Math.floor(amt / n), r = amt - base * n;
+    parts.forEach(function (p) { out[p] = base; });
+    var order = parts.indexOf(payer) >= 0 ? [payer].concat(parts.filter(function (p) { return p !== payer; })) : parts;
+    for (var k = 0; k < r; k++) out[order[k % n]] += 1;
+  }
+  V.members.forEach(function (m, i) { document.getElementById('a-v-' + i).value = out[m.id] || 0; });
+  addSum();
+}
+function addSum() {
+  var el = document.getElementById('a-sum'); if (!el) return;
+  var total = Math.round(Number(document.getElementById('a-amt').value) || 0), sum = 0;
+  V.members.forEach(function (m, i) { if (document.getElementById('a-on-' + i).checked) sum += Math.round(Number(document.getElementById('a-v-' + i).value) || 0); });
+  var diff = total - sum;
+  el.innerHTML = money(sum) + ' / ' + money(total) + ' ' + (total > 0 && diff === 0 ? '<span class="pos">剛好</span>' : total > 0 ? '<span class="neg">' + (diff > 0 ? '還差 ' : '多了 ') + money(Math.abs(diff)) + '</span>' : '');
 }
 function itemHTML(e) {
   var editing = U.editing === e.id, open = V.status !== 'closed';
@@ -268,7 +299,19 @@ function pTransfer() {
 
 /* ---------- 操作 ---------- */
 var ACT = {
-  tab: function (a) { U.tab = a; U.editing = null; render(); },
+  tab: function (a) { U.tab = a; U.editing = null; U.adding = false; render(); },
+  addOpen: function () { U.adding = true; U.editing = null; render(); window.scrollTo(0, 0); var d = document.getElementById('a-desc'); if (d) d.focus(); },
+  addClose: function () { U.adding = false; render(); },
+  addSave: function () {
+    var desc = document.getElementById('a-desc').value.trim(), amt = Math.round(Number(document.getElementById('a-amt').value) || 0);
+    if (!desc) return toast('請輸入項目名稱');
+    if (!(amt > 0)) return toast('請輸入金額');
+    var parts = [], shares = {}, sum = 0;
+    V.members.forEach(function (m, i) { if (document.getElementById('a-on-' + i).checked) { var v = Math.round(Number(document.getElementById('a-v-' + i).value) || 0); parts.push(m.id); shares[m.id] = v; sum += v; } });
+    if (!parts.length) return toast('至少要有一位分攤的人');
+    if (sum !== amt) return toast('每人金額加總要等於 ' + money(amt));
+    act('addItem', { desc: desc, amount: amt, payer: document.getElementById('a-payer').value, parts: parts, shares: shares }, '已記入「' + desc + '」').then(function (d) { if (d) { U.adding = false; render(); } });
+  },
   join: function () { act('join', null, '已加入分帳'); },
   temp: function () {
     var box = document.createElement('div');
@@ -340,7 +383,12 @@ document.addEventListener('click', function (ev) {
   var fn = ACT[b.dataset.act]; if (!fn) return;
   ev.preventDefault(); fn(b.dataset.arg || '');
 });
-document.addEventListener('input', function (ev) { if (ev.target.id && ev.target.id.indexOf('ed-') === 0) updateSum(); });
+document.addEventListener('input', function (ev) {
+  var id = ev.target.id || '';
+  if (id.indexOf('ed-') === 0) updateSum();
+  if (id === 'a-amt') addSplit(); else if (id.indexOf('a-v-') === 0) addSum();
+});
+document.addEventListener('change', function (ev) { var id = ev.target.id || ''; if (id === 'a-payer' || id.indexOf('a-on-') === 0) addSplit(); });
 document.addEventListener('change', function (ev) { if (ev.target.id && ev.target.id.indexOf('ed-on-') === 0) updateSum(); });
 
 /* ---------- 啟動 ---------- */
@@ -352,6 +400,7 @@ document.addEventListener('change', function (ev) { if (ev.target.id && ev.targe
     var q = params();
     sid = q.get('sid') || '';
     U.tab = ['items', 'settle', 'transfer'].indexOf(q.get('tab')) >= 0 ? q.get('tab') : 'items';
+    if (q.get('tab') === 'add') U.adding = true;
     if (!sid) return fatal('連結不完整', '請從 LINE 群組裡的分帳卡片重新開啟。');
     return api('load').then(function (d) {
       V = d;
