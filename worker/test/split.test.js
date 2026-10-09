@@ -338,3 +338,19 @@ test('成員名稱：查不到時用預設名，之後互動自動補上真名�
   await say(B, '改名 博凱哥');
   assert.match(w.last()[0].text, /已經有叫「博凱哥」/);
 });
+
+test('結算卡片：LINE Pay 收款人顯示「複製金額」與「開啟 LINE 錢包」', async () => {
+  const { settleCard, WALLET_URL } = await import('../src/split-line.js');
+  const { newSplit } = await import('../src/split-core.js');
+  let s = newSplit({ sid: 'abcdefabcdef', gid: 'G1', name: '聚餐', creator: A, creatorName: '博凱', today: '2026-10-08' });
+  s = apply(s, 'join', B, { name: '小明' }).state;
+  s = apply(s, 'addItem', A, { desc: '晚餐', amount: 1000, payer: A, parts: [A, B] }).state;
+  s = apply(s, 'settle', A, {}).state;
+  s = apply(s, 'setMethod', A, { mid: A, type: 'linepay' }).state;
+  const json = JSON.stringify(settleCard({}, s));
+  assert.match(json, /"type":"clipboard","label":"複製金額","clipboardText":"500"/);
+  assert.ok(json.includes(WALLET_URL));
+  assert.match(json, /「＋」→「轉帳」/);
+  s = apply(s, 'paid', B, { from: B, to: A }).state;                 // 付款後不再顯示
+  assert.ok(!JSON.stringify(settleCard({}, s)).includes('複製金額'));
+});
