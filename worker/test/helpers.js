@@ -60,6 +60,7 @@ export function fakeWorld({ rows = [], settings = { openingBalance: 0, cycleDay:
     if (u.startsWith('https://oauth2.googleapis.com/token')) return Response.json({ access_token: 'tok', expires_in: 3600 });
     if (u.startsWith('https://sheets.googleapis.com/')) {
       if (sheetStatus !== 200) return new Response('no', { status: sheetStatus });
+      if (u.includes('?fields=')) return Response.json({ sheets: [{ properties: { title: 'Transactions', sheetId: 0 } }, { properties: { title: 'Settings', sheetId: 1 } }] });
       if (u.includes(':batchGet') && decodeURIComponent(u).includes("'Settings'")) {
         w.ledgerReads = (w.ledgerReads || 0) + 1;
         const set = [['key', 'value'], ...Object.entries(settings).map(([k, v]) => [k, v])];
@@ -123,5 +124,76 @@ export function fakeNS(Klass) {
         },
       };
     },
+  };
+}
+
+/**
+ * 較完整的 Google Sheets 模擬：books = { [sheetId]: { [tabTitle]: rows[][] } }
+ * 支援：建立、讀工作表清單、改名/格式（batchUpdate）、batchGet（整欄或指定範圍）、values:batchUpdate、append
+ * 回傳 handler(url, init) → Response 或 null（不是 Sheets 的請求）
+ */
+export function fakeSheetsApi(books, log = []) {
+  const API = 'https://sheets.googleapis.com/v4/spreadsheets';
+  const colNum = (s) => [...s].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+  const parse = (a1) => {
+    const m = a1.match(/^'([^']+)'!([A-Z]*)(\d*)(?::([A-Z]*)(\d*))?$/);
+    return { tab: m[1], c1: m[2], r1: m[3], c2: m[4], r2: m[5] };
+  };
+  const get = (book, a1) => {
+    const p = parse(a1);
+    const rows = book[p.tab];
+    if (!rows) throw new Error('no tab ' + p.tab);
+    if (p.c1 === '' && p.r1 === '1') return rows.slice(0, 1);                   // 1:1
+    if (p.c1 === 'A' && p.c2 === 'A') return rows.map(r => [r[0]]);             // A:A
+    return rows.map(r => [...r]);                                                // A:Z / A:B / A:C
+  };
+  const put = (book, a1, values) => {
+    const p = parse(a1);
+    const rows = book[p.tab];
+    const r0 = Number(p.r1 || 1) - 1, c0 = colNum(p.c1 || 'A');
+    values.forEach((vals, k) => {
+      rows[r0 + k] = [...(rows[r0 + k] || [])];          // 不改到呼叫端共用的陣列（例如 HEADER）
+      vals.forEach((v, j) => { while (rows[r0 + k].length < c0 + j) rows[r0 + k].push(''); rows[r0 + k][c0 + j] = v; });
+    });
+  };
+  return async (url, init = {}) => {
+    const u = String(url);
+    if (!u.startsWith(API)) return null;
+    log.push(u.replace(API, '').split('?')[0] + (init.method === 'POST' ? ' POST' : ''));
+    if (u === API && init.method === 'POST') {
+      const body = JSON.parse(init.body);
+      const id = 'NEW';
+      books[id] = Object.fromEntries(body.sheets.map(s => [s.properties.title, []]));
+      books[id].__title = body.properties.title;
+      return Response.json({ spreadsheetId: id, sheets: body.sheets.map((s, i) => ({ properties: { ...s.properties, sheetId: i } })) });
+    }
+    const m = u.slice(API.length + 1).match(/^([^/?:]+)(.*)$/);
+    const book = books[m[1]], rest = decodeURIComponent(m[2]);
+    const tabs = () => Object.keys(book).filter(k => k !== '__title');
+    if (rest.startsWith('?fields=')) return Response.json({ sheets: tabs().map((title, i) => ({ properties: { title, sheetId: i } })) });
+    if (rest.startsWith(':batchUpdate')) {
+      for (const r of JSON.parse(init.body).requests) {
+        const t = r.updateSheetProperties?.properties;
+        if (t?.title) {
+          const old = tabs()[t.sheetId];
+          const entries = Object.entries(book).map(([k, v]) => [k === old ? t.title : k, v]);
+          for (const k of Object.keys(book)) delete book[k];
+          Object.assign(book, Object.fromEntries(entries));
+        }
+        if (r.deleteDimension) book[tabs()[r.deleteDimension.range.sheetId]].splice(r.deleteDimension.range.startIndex, 1);
+      }
+      return Response.json({});
+    }
+    if (rest.startsWith('/values:batchGet')) {
+      const ranges = [...rest.matchAll(/ranges=([^&]+)/g)].map(x => x[1]);
+      return Response.json({ valueRanges: ranges.map(a1 => ({ values: get(book, a1) })) });
+    }
+    if (rest.startsWith('/values:batchUpdate')) {
+      for (const d of JSON.parse(init.body).data) put(book, decodeURIComponent(d.range), d.values);
+      return Response.json({});
+    }
+    const ap = rest.match(/^\/values\/('[^']+')!A1:append/);
+    if (ap) { book[ap[1].slice(1, -1)].push(...JSON.parse(init.body).values); return Response.json({}); }
+    throw new Error('unexpected sheets ' + u);
   };
 }

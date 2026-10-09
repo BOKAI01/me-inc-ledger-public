@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import worker, { handleEvent } from '../src/index.js';
 import { apply, equalShares, minTransfers, balances, parsePlus, myShares } from '../src/split-core.js';
 import { Split } from '../src/split-do.js';
+import { resetSheetCaches } from '../src/google.js';
 import { encryptText, b64u } from '../src/crypto.js';
-import { HEADER, fakeKV, fakeEntryNS, fakeNS } from './helpers.js';
+import { HEADER, fakeKV, fakeEntryNS, fakeNS, fakeSheetsApi } from './helpers.js';
 
 const KEY = b64u(new Uint8Array(32).fill(9));
 const A = 'Uaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1', B = 'Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2', C = 'Ucccccccccccccccccccccccccccccc3';
@@ -103,6 +104,7 @@ test('結束分帳：只有建立者；銀行帳號立即刪除', () => {
 /* ---------- 群組流程（LINE 事件） ---------- */
 function world() {
   const w = { replies: [], sheetCalls: 0, sheets: {} };
+  const sheets = fakeSheetsApi(w.sheets);
   w.fetch = async (url, init = {}) => {
     const u = String(url);
     const pm = u.match(/\/v2\/bot\/group\/G1\/member\/(\w+)$/);
@@ -113,20 +115,14 @@ function world() {
       return t.startsWith('tok-') ? Response.json({ sub: t.slice(4), name: NAMES[t.slice(4)], exp: Date.now() / 1000 + 3600 }) : new Response('bad', { status: 400 });
     }
     if (u === 'https://oauth2.googleapis.com/token') return Response.json({ access_token: 'AT', expires_in: 3600 });
-    if (u.startsWith('https://sheets.googleapis.com/')) {
-      w.sheetCalls++;
-      const sh = w.sheets.S1;
-      if (u.includes(':batchGet') && decodeURIComponent(u).includes("'Settings'")) return Response.json({ valueRanges: [{ values: sh.Transactions }, { values: sh.Settings }] });
-      if (u.includes(':batchGet')) return Response.json({ valueRanges: [{ values: [sh.Transactions[0]] }, { values: sh.Transactions.map(r => [r[0]]) }] });
-      if (u.includes(':append')) { const name = decodeURIComponent(u).match(/'(\w+)'/)[1]; sh[name].push(...JSON.parse(init.body).values); return Response.json({}); }
-      if (u.includes(':batchUpdate')) return Response.json({});
-    }
+    if (u.startsWith('https://sheets.googleapis.com/')) { w.sheetCalls++; return sheets(url, init); }
     throw new Error('unexpected ' + u);
   };
   w.last = () => w.replies.at(-1).messages;
   return w;
 }
 async function env() {
+  resetSheetCaches();
   const E = { TOKEN_ENC_KEY: KEY, GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'cs', LINE_CHANNEL_SECRET: 's', LINE_CHANNEL_ACCESS_TOKEN: 't',
     LIFF_ID: '2000000000-abcdEFGH', LINE_LOGIN_CHANNEL_ID: '2000000000', LINE_BASIC_ID: '@353ktrhx', SITE_URL: 'https://site.test/',
     KV: fakeKV(), ENTRY: fakeEntryNS(), SPLIT: fakeNS(Split) };
@@ -218,11 +214,12 @@ test('群組：建立 → 加入 → 記帳 → 結算 → 收付款 → 結束�
   const t1 = await callApi(B, { action: 'transfer', eids: [eid] });
   assert.equal(t1.ok, true, t1.error);
   assert.deepEqual(t1.data.wrote, { count: 1, total: 1000 });
-  const row = w.sheets.S1.Transactions[1];
-  assert.equal(row[0], `sp${sid}${eid}`); assert.equal(row[1], 'outflow'); assert.equal(row[4], 1000); assert.equal(row[5], '晚餐');
+  const row = w.sheets.S1['記帳明細'][1];
+  assert.equal(row[0], `sp${sid}${eid}`); assert.equal(row[1], '支出'); assert.equal(row[4], 1000); assert.equal(row[5], '晚餐');
+  assert.equal(row[6], '分帳：宜蘭兩天一夜'); assert.equal(row[8], '是'); assert.equal(row[10], '日常');
   const t2 = await callApi(B, { action: 'transfer', eids: [eid] });
   assert.match(t2.error, /尚未轉入/);
-  assert.equal(w.sheets.S1.Transactions.length, 2);
+  assert.equal(w.sheets.S1['記帳明細'].length, 2);
 });
 
 test('分帳網頁：銀行帳號加密保存、成員才看得到、記住帳號寫入本人試算表', async () => {
@@ -261,7 +258,7 @@ test('分帳網頁：銀行帳號加密保存、成員才看得到、記住帳�
   // 小明記住帳號 → 寫進他自己的 Settings
   const r2 = await callApi(B, { action: 'setMethod', mid: B, type: 'bank', bank: '700', acct: '00112233445566', remember: true });
   assert.equal(r2.ok, true, r2.error);
-  assert.deepEqual(w.sheets.S1.Settings.at(-1), ['payoutAccount', '700-00112233445566']);
+  assert.deepEqual(w.sheets.S1['設定'].at(-1), ['收款帳號', '700-00112233445566']);
 
   const page = await (await worker.fetch(new Request('https://bot.test/split'), E, {})).text();
   assert.match(page, /"liffId":"2000000000-abcdEFGH"/);

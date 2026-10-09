@@ -3,13 +3,16 @@ import assert from 'node:assert/strict';
 import worker, { handleEvent } from '../src/index.js';
 import { encryptText, decryptText, signState, verifyState, b64u } from '../src/crypto.js';
 import { HEADER } from './helpers.js';
-import { fakeKV, fakeEntryNS } from './helpers.js';
+import { fakeKV, fakeEntryNS, fakeSheetsApi } from './helpers.js';
+import { HEADER_ZH } from '../src/zh.js';
+import { resetSheetCaches } from '../src/google.js';
 
 const KEY = b64u(new Uint8Array(32).fill(7));
 const UID = 'Unewuser000000000000000000000001';
 
 function world() {
   const w = { replies: [], sheets: {}, tokenCalls: [], revoked: false, createdBy: null };
+  const sheets = fakeSheetsApi(w.sheets);
   w.fetch = async (url, init = {}) => {
     const u = String(url);
     if (u === 'https://oauth2.googleapis.com/token') {
@@ -22,32 +25,10 @@ function world() {
       return Response.json({ access_token: 'AT2', expires_in: 3600 });
     }
     if (u === 'https://oauth2.googleapis.com/revoke') { w.revokeCalled = true; return new Response(''); }
-    if (u === 'https://sheets.googleapis.com/v4/spreadsheets' && init.method === 'POST') {
-      w.createdBy = init.headers.Authorization;
-      const body = JSON.parse(init.body);
-      w.sheets.NEW = { title: body.properties.title, Transactions: [], Settings: [] };
-      return Response.json({ spreadsheetId: 'NEW' });
-    }
-    const m = u.match(/spreadsheets\/(\w+)\/values(:batchUpdate|:batchGet|\/[^?]+:append)/);
-    if (m) {
-      const sh = w.sheets[m[1]];
-      if (m[2] === ':batchUpdate') {
-        for (const d of JSON.parse(init.body).data) {
-          const r = decodeURIComponent(d.range).match(/^'(\w+)'!([A-Z])(\d+)/);
-          const rows = sh[r[1]], ri = Number(r[3]) - 1, ci = r[2].charCodeAt(0) - 65;
-          d.values.forEach((vals, k) => { rows[ri + k] = rows[ri + k] || []; vals.forEach((v, j) => { rows[ri + k][ci + j] = v; }); });
-        }
-        return Response.json({});
-      }
-      if (m[2] === ':batchGet') {
-        w.lastAuth = init.headers.Authorization;
-        if (u.includes('Settings')) return Response.json({ valueRanges: [{ values: sh.Transactions }, { values: sh.Settings }] });
-        return Response.json({ valueRanges: [{ values: [sh.Transactions[0]] }, { values: sh.Transactions.map(r => [r[0]]) }] });
-      }
-      const name = decodeURIComponent(u).match(/'(\w+)'/)[1];
-      sh[name].push(...JSON.parse(init.body).values);
-      return Response.json({});
-    }
+    if (u.includes('/values:batchGet')) w.lastAuth = init.headers?.Authorization;
+    if (u === 'https://sheets.googleapis.com/v4/spreadsheets' && init.method === 'POST') w.createdBy = init.headers.Authorization;
+    const sr = await sheets(url, init);
+    if (sr) return sr;
     if (u.startsWith('https://api.line.me/')) { w.replies.push(JSON.parse(init.body)); return Response.json({}); }
     throw new Error('unexpected ' + u);
   };
@@ -56,6 +37,7 @@ function world() {
 }
 
 function env() {
+  resetSheetCaches();
   return {
     TOKEN_ENC_KEY: KEY, GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'csec',
     LINE_PUB_CHANNEL_SECRET: 's', LINE_PUB_CHANNEL_ACCESS_TOKEN: 't', LINE_PUB_BASIC_ID: '@pub',
@@ -106,7 +88,8 @@ test('開通全流程：歡迎 → Google 登入 → 自動建帳本 → 存款 
   assert.match(html, /帳本已建立/);
   assert.match(html, /line\.me\/R\/oaMessage\/%40pub\/\?%E5%AE%8C%E6%88%90%E9%80%A3%E7%B5%90/);
   assert.equal(w.createdBy, 'Bearer AT1');
-  assert.deepEqual(w.sheets.NEW.Transactions[0], HEADER);
+  assert.deepEqual(w.sheets.NEW['記帳明細'][0], HEADER_ZH);
+  assert.equal(w.sheets.NEW['設定'][0][0], '設定項目');
   const bind = JSON.parse(E.KV.m.get(`bind:pub:${UID}`));
   assert.equal(bind.sheetId, 'NEW'); assert.equal(bind.auth, 'oauth');
   const stored = E.KV.m.get(`tok:pub:${UID}`);
@@ -124,15 +107,16 @@ test('開通全流程：歡迎 → Google 登入 → 自動建帳本 → 存款 
   assert.match(w.last()[0].text, /開通完成/);
   const site = w.last()[1].contents.footer.contents[0].action.uri;
   assert.match(site, /openExternalBrowser=1#api=https%3A%2F%2Fbot\.test%2Fapi%3Fkey%3D/);
-  const settings = Object.fromEntries(w.sheets.NEW.Settings.slice(1).map(r => [r[0], r[1]]));
-  assert.equal(settings.openingBalance, 52000); assert.equal(settings.cycleDay, 5);
+  const settings = Object.fromEntries(w.sheets.NEW['設定'].slice(1).map(r => [r[0], r[1]]));
+  assert.equal(settings['期初存款'], 52000); assert.equal(settings['結算日'], 5);
   assert.equal(E.KV.m.has(`ob:pub:${UID}`), false);
 
   // 開始記帳：用使用者自己的權杖（refresh 取得的 AT2 或 AT1）
   await say('午餐 120');
   const pid = w.last()[0].contents.footer.contents[0].action.data.match(/p=(\w+)/)[1];
   await tap(`a=ok&p=${pid}`);
-  assert.equal(w.sheets.NEW.Transactions.length, 2);
+  assert.equal(w.sheets.NEW['記帳明細'].length, 2);
+  assert.deepEqual(w.sheets.NEW['記帳明細'][1].slice(1, 3), ['支出', '食 · 餐飲部']);
   assert.match(w.last()[0].text, /已寫入/);
   assert.match(w.lastAuth, /^Bearer AT/);
 

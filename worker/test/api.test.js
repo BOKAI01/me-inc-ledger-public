@@ -1,62 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
-import { resetTokenCache } from '../src/google.js';
+import { resetTokenCache, resetSheetCaches } from '../src/google.js';
 import { scanDuplicates } from '../src/api.js';
-import { fakeKV, fakeEntryNS, makeServiceAccount, HEADER } from './helpers.js';
+import { fakeKV, fakeEntryNS, makeServiceAccount, HEADER, fakeSheetsApi } from './helpers.js';
 
 const SA = await makeServiceAccount();
 const KEY = 'k_0123456789abcdef0123';
 
-/* 模擬一本試算表：支援 batchGet / values.batchUpdate / append / deleteDimension / metadata */
+/* 模擬一本試算表（舊的英文帳本，第一次讀取時會自動中文化） */
 function fakeSheets(rows = [], settings = [['openingBalance', 1000], ['cycleDay', 5], ['fundTarget', 50000]]) {
-  const S = { Transactions: [HEADER, ...rows.map(r => [...r])], Settings: [['key', 'value'], ...settings] };
-  const gids = { Transactions: 0, Settings: 11 };
+  const books = { SHEET: { Transactions: [HEADER, ...rows.map(r => [...r])], Settings: [['key', 'value'], ...settings] } };
   const calls = [];
-  const parseA1 = (a1) => {
-    const m = decodeURIComponent(a1).match(/^'([^']+)'!([A-Z]+)(\d+)/);
-    const col = [...m[2]].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-    return { sheet: m[1], row: Number(m[3]) - 1, col };
-  };
+  const api = fakeSheetsApi(books);
   const f = async (url, init = {}) => {
     const u = String(url);
     if (u.startsWith('https://oauth2.googleapis.com/')) return Response.json({ access_token: 't', expires_in: 3600 });
     if (u.startsWith('https://gas.test/')) { calls.push('gas'); return Response.json({ ok: true, data: {} }); }
-    const path = u.replace('https://sheets.googleapis.com/v4/spreadsheets/SHEET', '');
-    if (path.startsWith('/values:batchGet')) {
-      calls.push('read');
-      return Response.json({ valueRanges: [{ values: S.Transactions }, { values: S.Settings }] });
-    }
-    if (path.startsWith('/values:batchUpdate')) {
-      calls.push('write');
-      for (const d of JSON.parse(init.body).data) {
-        const { sheet, row, col } = parseA1(d.range);
-        while (S[sheet][row].length <= col) S[sheet][row].push('');
-        S[sheet][row][col] = d.values[0][0];
-      }
-      return Response.json({});
-    }
-    if (path.includes(':append')) {
-      calls.push('append');
-      const sheet = decodeURIComponent(path).match(/'([^']+)'/)[1];
-      S[sheet].push(...JSON.parse(init.body).values);
-      return Response.json({});
-    }
-    if (path.startsWith('?fields=')) return Response.json({ sheets: Object.entries(gids).map(([title, sheetId]) => ({ properties: { title, sheetId } })) });
-    if (path.startsWith(':batchUpdate')) {
-      calls.push('delete');
-      const r = JSON.parse(init.body).requests[0].deleteDimension.range;
-      const sheet = Object.keys(gids).find(k => gids[k] === r.sheetId);
-      S[sheet].splice(r.startIndex, 1);
-      return Response.json({});
-    }
+    const r = await api(url, init);
+    if (r) return r;
     throw new Error('unexpected ' + u);
+  };
+  const S = {
+    get Transactions() { return books.SHEET['記帳明細'] || books.SHEET.Transactions; },
+    get Settings() { return books.SHEET['設定'] || books.SHEET.Settings; },
   };
   return { S, calls, fetch: f };
 }
 
 function setup(rows, settings) {
   resetTokenCache();
+  resetSheetCaches();
   const sh = fakeSheets(rows, settings);
   const env = {
     GOOGLE_SA_JSON: SA, LEGACY_GAS_URL: 'https://gas.test/exec',
@@ -132,7 +106,7 @@ test('api: updateTxn 只改指定欄位；找不到也回成功', async () => {
   const r = await s.call('updateTxn', { id: '2', fields: { amount: 999, client: '晚餐', date: '2026-10-06', account: 'savings' } });
   assert.equal(r.ok, true);
   const t = s.sh.S.Transactions[2];
-  assert.equal(t[4], 999); assert.equal(t[5], '晚餐'); assert.equal(t[3], '2026-10-06'); assert.equal(t[10], 'savings');
+  assert.equal(t[4], 999); assert.equal(t[5], '晚餐'); assert.equal(t[3], '2026-10-06'); assert.equal(t[10], '儲蓄口袋');
   assert.equal(t[9], '2026-10-07T01:00:00.000Z');   // 其他欄位不動
   assert.equal(s.sh.S.Transactions[1][4], 100);
   assert.equal((await s.call('updateTxn', { id: 'nope', fields: { amount: 1 } })).ok, true);
