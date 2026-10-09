@@ -235,7 +235,7 @@ function updateSum() {
 function methodHTML(mid) {
   var m = V.methods[mid];
   if (!m) return '<span class="hint">尚未設定收款方式</span>';
-  if (m.type === 'linepay') return 'LINE Pay：請轉給 ' + esc(nm(mid)) + '（需在 LINE Pay 自行選人並輸入金額）';
+  if (m.type === 'linepay') return 'LINE Pay：轉給 ' + esc(nm(mid)) + '<div class="hint">付款步驟：① 按「複製金額」 ② 按「開啟 LINE 錢包」或到與 ' + esc(nm(mid)) + ' 的聊天室按「＋」→「轉帳」 ③ 貼上金額轉帳 ④ 回來按「我已付款」</div>';
   if (m.type === 'cash') return '現金：請當面交給 ' + esc(nm(mid));
   if (m.wiped || !m.acct) return '<span class="hint">銀行帳號已在分帳結束時刪除</span>';
   var k = mid, show = U.reveal[k];
@@ -266,7 +266,9 @@ function pSettle() {
       var pill = t.recv ? '<span class="pill recv">已收到</span>' : t.paid ? '<span class="pill paid">已付款，待確認</span>' : '<span class="pill wait">未付</span>';
       var bs = '';
       if (open && !t.recv) {
-        bs = '<div class="btns">' + (!t.paid && canFor(t.from) ? '<button class="btn sm" data-act="paid" data-arg="' + esc(t.from) + '|' + esc(t.to) + '">我已付款</button>' : '') +
+        var lp = !t.paid && t.from === V.me && V.methods[t.to] && V.methods[t.to].type === 'linepay';
+        bs = '<div class="btns">' + (lp ? '<button class="btn sm" data-act="copyAmt" data-arg="' + t.amount + '">複製金額</button><a class="btn sm" href="https://line.me/R/nv/wallet">開啟 LINE 錢包</a>' : '') +
+          (!t.paid && canFor(t.from) ? '<button class="btn sm" data-act="paid" data-arg="' + esc(t.from) + '|' + esc(t.to) + '">我已付款</button>' : '') +
           (canFor(t.to) ? '<button class="btn sm primary" data-act="recv" data-arg="' + esc(t.from) + '|' + esc(t.to) + '">已收到</button>' : '') + '</div>';
       }
       return '<div class="tr"><div class="tr-top"><span>' + esc(nm(t.from)) + ' → ' + esc(nm(t.to)) + '</span><b>' + money(t.amount) + '</b></div><div class="tr-top"><span class="hint">' + (t.from === V.me ? '你要付款' : t.to === V.me ? '你要收款' : '') + '</span>' + pill + '</div>' + bs + '</div>';
@@ -369,6 +371,9 @@ var ACT = {
   copy: function (k) {
     var m = V.methods[k], full = m.bank + '-' + m.acct;
     try { navigator.clipboard.writeText(full).then(function () { toast('已複製 ' + full); }, function () { toast('帳號：' + full); }); } catch (e) { toast('帳號：' + full); }
+  },
+  copyAmt: function (a) {
+    try { navigator.clipboard.writeText(String(a)).then(function () { toast('已複製金額 ' + a); }, function () { toast('金額：' + a); }); } catch (e) { toast('金額：' + a); }
   },
   paid: function (a) { var p = a.split('|'); act('paid', { from: p[0], to: p[1] }, '已標記為已付款'); },
   recv: function (a) { var p = a.split('|'); act('recv', { from: p[0], to: p[1] }, '已確認收到'); },
