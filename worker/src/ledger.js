@@ -36,9 +36,15 @@ function pocketByName(text) {
   return null;
 }
 
+/* 撥款的口袋：口袋欄空白或填「日常」時（例如手動輸入），改由品項／備註判斷，最後才預設緊急備用金 */
+function allocPocket(tx) {
+  if (tx.account === 'savings' || tx.account === 'emergency') return tx.account;
+  return pocketByName(tx.client) || pocketByName(tx.description) || 'emergency';
+}
+
 export function classify(tx) {
   if (tx.type === 'alloc') {
-    return { kind: 'alloc', dir: tx.category === 'alloc_out' ? 'out' : 'in', pocket: tx.account || 'emergency' };
+    return { kind: 'alloc', dir: tx.category === 'alloc_out' ? 'out' : 'in', pocket: allocPocket(tx) };
   }
   if (tx.type === 'outflow' && tx.category === 'other_out' && (!tx.account || tx.account === 'daily')) {
     const p = pocketByName(tx.client);
