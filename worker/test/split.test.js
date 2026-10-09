@@ -266,3 +266,49 @@ test('分帳網頁：銀行帳號加密保存、成員才看得到、記住帳�
   const page = await (await worker.fetch(new Request('https://bot.test/split'), E, {})).text();
   assert.match(page, /"liffId":"2000000000-abcdEFGH"/);
 });
+
+test('網頁記一筆：直接記入、自訂金額檢查、結算中會重算', () => {
+  let s = seed();
+  const ids = s.members.map(m => m.id);
+  assert.match(apply(s, 'addItem', A, { desc: '', amount: 100, parts: ids }).res.error, /項目名稱/);
+  assert.match(apply(s, 'addItem', A, { desc: '晚餐', amount: 1000, parts: [A, B], shares: { [A]: 600, [B]: 300 } }).res.error, /要等於/);
+  let r = apply(s, 'addItem', A, { desc: '晚餐', amount: 1000, payer: B, parts: [A, B, C], today: '2026-10-08' });
+  assert.equal(r.res.ok, true);
+  const e = r.state.entries[0];
+  assert.equal(e.status, 'ok'); assert.equal(e.payer, B); assert.equal(e.mode, 'equal');
+  assert.deepEqual(e.shares, { [A]: 333, [B]: 334, [C]: 333 });
+  s = apply(r.state, 'settle', A).state;
+  r = apply(s, 'addItem', A, { desc: '飲料', amount: 300, parts: [A, B], shares: { [A]: 300, [B]: 0 }, today: '2026-10-08' });
+  assert.equal(r.res.recalc, true);
+  assert.deepEqual(r.state.entries[1].parts, [A]);
+  assert.equal(r.state.entries[1].mode, 'custom');
+  assert.match(apply(r.state, 'addItem', 'Uoutsider', { desc: 'x', amount: 1, parts: [A] }).res.error, /請先加入/);
+});
+
+test('快捷列：群組依狀態顯示、私訊已開通才顯示、不覆蓋原本的快捷選項', async () => {
+  const w = world(), E = await env();
+  w.sheets.S1 = { Transactions: [HEADER], Settings: [['key', 'value'], ['openingBalance', 0]] };
+  const deps = { ch: '', base: 'https://bot.test', fetch: w.fetch, today: '2026-10-08' };
+  const src = (u) => ({ type: 'group', groupId: 'G1', userId: u });
+  const say = (u, t) => handleEvent({ type: 'message', replyToken: 'r', source: src(u), message: { type: 'text', text: t } }, E, deps);
+  const tap = (u, d) => handleEvent({ type: 'postback', replyToken: 'r', source: src(u), postback: { data: d } }, E, deps);
+  const labels = () => (w.last().at(-1).quickReply?.items || []).map(i => i.action.label);
+
+  await say(A, '說明');
+  assert.deepEqual(labels(), ['建立分帳區', '說明']);
+  await tap(A, 'a=sc');
+  assert.deepEqual(labels(), ['週末出遊', '同事聚餐', '室友公費']);       // 保留原本的選項
+  await say(A, '宜蘭');
+  const sid = E.KV.m.get('grp:G1');
+  assert.deepEqual(labels(), ['記一筆', '分帳總覽', '結算', '加入分帳', '結束分帳', '說明']);
+  assert.match(w.last().at(-1).quickReply.items[0].action.uri, new RegExp(`sid=${sid}&tab=add`));
+  await say(A, '分帳總覽');
+  assert.match(JSON.stringify(w.last()), /目前總覽/);
+
+  // 私訊：已開通的小明有快捷列；未開通的小華沒有
+  const dm = (u, t) => handleEvent({ type: 'message', replyToken: 'r', source: { type: 'user', userId: u }, message: { type: 'text', text: t } }, E, deps);
+  await dm(B, '說明');
+  assert.deepEqual(labels(), ['餘額', '本期摘要', '開啟網站', '和朋友分帳', '說明']);
+  await dm(C, '說明');
+  assert.equal(w.last().at(-1).quickReply, undefined);
+});
