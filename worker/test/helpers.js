@@ -94,3 +94,34 @@ export function fakeWorld({ rows = [], settings = { openingBalance: 0, cycleDay:
   };
   return w;
 }
+
+/* 通用 Durable Object 模擬：Class 需有 fetch(request)；alarm 不會自動觸發 */
+export function fakeNS(Klass) {
+  const inst = new Map();
+  return {
+    inst,
+    idFromName: (n) => n,
+    get(id) {
+      if (!inst.has(id)) {
+        const store = new Map();
+        const storage = {
+          alarm: null,
+          async get(k) { return store.get(k); },
+          async put(k, v) { store.set(k, structuredClone(v)); },
+          async setAlarm(t) { this.alarm = t; },
+          async deleteAll() { store.clear(); },
+          async delete(k) { store.delete(k); },
+        };
+        inst.set(id, { obj: new Klass({ storage }, {}), q: Promise.resolve(), storage, store });
+      }
+      const it = inst.get(id);
+      return {
+        fetch(url, init) {
+          const run = it.q.then(() => it.obj.fetch(new Request(url, init)));
+          it.q = run.catch(() => {});
+          return run;
+        },
+      };
+    },
+  };
+}

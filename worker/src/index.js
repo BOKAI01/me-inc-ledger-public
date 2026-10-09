@@ -10,8 +10,11 @@ import { tokenFor, AuthRevokedError, needsRelink, bindKey, tokKey, obKey, authLi
 import { computePockets, computeSummary, taipeiToday, catLabel, fmt } from './ledger.js';
 import { Entry, entryCall } from './entry.js';
 import { handleApi } from './api.js';
+import { Split } from './split-do.js';
+import { handleGroupEvent, tutorialCard } from './split-line.js';
+import { splitPage, handleSplitApi } from './split-web.js';
 
-export { Entry };
+export { Entry, Split };
 
 const HELP = [
   '📒 記帳方式：項目 + 金額',
@@ -36,6 +39,7 @@ const HELP = [
   '・網站：開啟你的帳本網站',
   '・我的帳本：開啟 Google 試算表',
   '・隱私：查看隱私重點',
+  '・開分帳：和朋友在 LINE 群組分帳',
 ].join('\n');
 
 const PRIVACY_SHORT = [
@@ -54,6 +58,8 @@ export default {
     if (url.pathname === '/line/webhook' && request.method === 'POST') return webhook(request, env, ctx, '');
     if (url.pathname === '/line/webhook/pub' && request.method === 'POST') return webhook(request, env, ctx, 'pub');
     if (url.pathname === '/api') return handleApi(request, env, ctx);
+    if (url.pathname === '/split') return splitPage(env);
+    if (url.pathname === '/split/api') return handleSplitApi(request, env, { base: url.origin });
     if (url.pathname === '/auth/start') return handleAuthStart(request, env);
     if (url.pathname === '/auth/callback') return handleAuthCallback(request, env);
     if (url.pathname === '/privacy') return privacyPage(env);
@@ -89,6 +95,11 @@ export async function handleEvent(ev, env, deps = {}) {
   const uid = ev.source?.userId;
   const C = channel(env, deps.ch || '');
   const send = (msgs) => (ev.replyToken ? reply(C.token, ev.replyToken, msgs, fetchImpl) : null);
+
+  // 群組／多人聊天室：只處理分帳，絕不寫入個人帳本
+  if (ev.source?.type === 'group' || ev.source?.type === 'room') {
+    return handleGroupEvent(ev, { env, token: C.token, fetchImpl, today, send });
+  }
   if (!uid) return;
   const ctxo = { env, ch: C.ch, uid, base: deps.base || env.PUBLIC_BASE_URL || '', fetchImpl, send };
 
@@ -104,6 +115,7 @@ export async function handleEvent(ev, env, deps = {}) {
     ] }));
   if (ev.type === 'postback' && ev.postback?.data === 'a=wipe') return send(text(await wipeUser(ctxo, bind)));
   if (ev.type === 'postback' && ev.postback?.data === 'a=nowipe') return send(text('好的，沒有刪除任何資料。'));
+  if (msgText && /^(開分帳|分帳|群組分帳)$/.test(msgText)) return send(tutorialCard());
 
   // 尚未開通，或開通流程進行中
   const ob = bind ? await env.KV.get(obKey(C.ch, uid), 'json') : null;

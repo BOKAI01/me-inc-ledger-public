@@ -181,3 +181,13 @@ test('Google 頁面按取消 → 說明並可重試；隱私頁', async () => {
   const p = await (await worker.fetch(new Request('https://bot.test/privacy'), E, {})).text();
   assert.match(p, /drive\.file/);
 });
+
+test('keygen 頁面：腳本語法正確，會產生 43 字元金鑰', async () => {
+  const html = await (await worker.fetch(new Request('https://bot.test/keygen'), {}, {})).text();
+  const js = html.match(/<script>([\s\S]*)<\/script>/)[1];
+  assert.doesNotThrow(() => new Function(js));
+  const el = { textContent: '' };
+  const fakeDoc = { getElementById: (id) => (id === 'k' ? el : {}), createRange: () => ({}) };
+  new Function('document', 'window', 'navigator', js)(fakeDoc, {}, {});
+  assert.match(el.textContent, /^[A-Za-z0-9_-]{43}$/);
+});
