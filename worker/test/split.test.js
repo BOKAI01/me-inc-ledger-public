@@ -105,7 +105,9 @@ test('結束分帳：只有建立者；銀行帳號立即刪除', () => {
 function world() {
   const w = { replies: [], sheetCalls: 0, sheets: {} };
   const sheets = fakeSheetsApi(w.sheets);
-  w.fetch = async (url, init = {}) => {
+  // 模擬 Workers：fetch 若被當成物件方法呼叫（this 不是 undefined）就丟 Illegal invocation
+  w.fetch = async function (url, init = {}) {
+    if (this !== undefined) throw new TypeError('Illegal invocation');
     const u = String(url);
     const pm = u.match(/\/v2\/bot\/group\/G1\/member\/(\w+)$/) || u.match(/\/v2\/bot\/profile\/(\w+)$/);
     if (pm) return w.profileDown ? new Response('{"message":"Not found"}', { status: 404 }) : Response.json({ displayName: NAMES[pm[1]] || '路人' });
@@ -325,12 +327,14 @@ test('成員名稱：查不到時用預設名，之後互動自動補上真名�
   assert.deepEqual(await names(), ['成員aaa1', '成員bbb2']);
 
   w.profileDown = false;
-  await say(B, '分帳');                                // 下次互動自動補上真名
-  assert.deepEqual(await names(), ['成員aaa1', '小明']);
+  await say(B, '分帳');                                // 任何人互動時，所有預設名的成員都會補上真名
+  assert.deepEqual(await names(), ['博凱', '小明']);
+  await tap(C, `a=sj&s=${sid}`);                       // 之後加入的人直接用 LINE 名字
+  assert.deepEqual(await names(), ['博凱', '小明', '小華']);
   await say(A, '改名 博凱哥');
   assert.match(w.last()[0].text, /已改名為「博凱哥」/);
   await say(A, '分帳');                                // 手動改的名字不會被自動覆蓋
-  assert.deepEqual(await names(), ['博凱哥', '小明']);
+  assert.deepEqual(await names(), ['博凱哥', '小明', '小華']);
   await say(B, '改名 博凱哥');
   assert.match(w.last()[0].text, /已經有叫「博凱哥」/);
 });
