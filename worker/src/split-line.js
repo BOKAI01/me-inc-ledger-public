@@ -22,6 +22,7 @@ export const SPLIT_HELP = [
   '・記一筆　用網頁輸入，可選付款人與分攤的人',
   '・結算　算出誰該付誰多少',
   '・結束分帳　建立者結束並決定是否保留',
+  '・改名 名字　修改自己在分帳區顯示的名字',
   '',
   '沒有 + 開頭的聊天訊息，我都不會記。',
   '群組裡的帳只會記到分帳區，不會進任何人的個人帳本。',
@@ -189,14 +190,33 @@ const gidOf = (src) => src.groupId || src.roomId;
 const curKey = (gid) => `grp:${gid}`;
 const waitKey = (gid) => `grpw:${gid}`;
 
+/** 群組成員的 LINE 名稱；查不到回傳 null（並記錄 LINE 回傳的原因） */
 async function profileName(c, uid) {
   const src = c.src;
   const path = src.type === 'room' ? `room/${src.roomId}` : `group/${src.groupId}`;
-  try {
-    const r = await c.fetchImpl(`https://api.line.me/v2/bot/${path}/member/${uid}`, { headers: { Authorization: `Bearer ${c.token}` } });
-    if (r.ok) { const j = await r.json(); if (j.displayName) return String(j.displayName).slice(0, 20); }
-  } catch (err) { console.error('profile failed', err); }
-  return '成員' + String(uid).slice(-4);
+  const urls = [`https://api.line.me/v2/bot/${path}/member/${uid}`, `https://api.line.me/v2/bot/profile/${uid}`];
+  for (const u of urls) {
+    try {
+      const r = await c.fetchImpl(u, { headers: { Authorization: `Bearer ${c.token}` } });
+      if (r.ok) {
+        const j = await r.json();
+        if (j.displayName) return String(j.displayName).trim().slice(0, 20);
+      } else {
+        console.error('profile lookup failed', u.replace(/U[0-9a-f]{32}/g, 'U…'), r.status, (await r.text().catch(() => '')).slice(0, 200));
+      }
+    } catch (err) { console.error('profile lookup error', err); }
+  }
+  return null;
+}
+const fallbackName = (uid) => '成員' + String(uid).slice(-4);
+const isFallback = (name) => /^成員[0-9a-f]{0,4}$/i.test(String(name || ''));
+
+/** 名稱還是預設值的成員：每次互動時重新查一次 LINE 名稱 */
+async function refreshName(c, s) {
+  const m = s?.members.find(x => x.id === c.uid);
+  if (!m || !isFallback(m.name)) return;
+  const name = await profileName(c, c.uid);
+  if (name) await splitCall(c.env, s.sid, 'rename', c.uid, { mid: c.uid, name, auto: true });
 }
 
 async function current(c) {
@@ -270,6 +290,14 @@ export async function handleGroupEvent(ev, deps) {
       if (aw.type === 'name') return createSplit(c, t);
       if (aw.type === 'temp') return addTemp(c, aw.sid, t);
     }
+    const rn = t.match(/^改名\s+(.{1,20})$/);
+    if (rn) {
+      const s0 = await current(c);
+      if (!s0) return send(text('目前沒有進行中的分帳區。'));
+      const r = await splitCall(env, s0.sid, 'rename', c.uid, { mid: c.uid, name: rn[1].trim() });
+      return send(text(r.res.ok ? `✅ 已改名為「${rn[1].trim()}」` : r.res.error));
+    }
+    if (plus || CMD.test(t)) { try { await refreshName(c, await current(c)); } catch (err) { console.error('refresh name failed', err); } }
     if (plus) return addEntry(c, t);
     if (!CMD.test(t)) return;                                   // 一般聊天：不回應
     if (/^(分帳說明|說明)$/.test(t)) return send(text(SPLIT_HELP));
@@ -304,11 +332,11 @@ export async function handleGroupEvent(ev, deps) {
       const s = await current(c);
       if (s) return send(text(`這個群組已經有進行中的分帳區「${s.name}」。一個群組同時只能有一個分帳區。`));
       await env.KV.put(waitKey(gid), JSON.stringify({ uid: c.uid, type: 'name' }), { expirationTtl: 600 });
-      const name = await profileName(c, c.uid);
-      return send(text(`${name}，請輸入分帳區名稱：`, qrSay(['週末出遊', '同事聚餐', '室友公費'])));
+      const name = (await profileName(c, c.uid)) || '';
+      return send(text(`${name ? name + '，' : ''}請輸入分帳區名稱：`, qrSay(['週末出遊', '同事聚餐', '室友公費'])));
     }
     case 'sj': {
-      const name = await profileName(c, c.uid);
+      const name = (await profileName(c, c.uid)) || fallbackName(c.uid);
       const r = await call('join', { name });
       if (!r.res.ok) return send(text(r.res.error));
       return send(text(r.res.already ? `${name} 已經在分帳區裡了。` : `✅ ${name} 加入了分帳（共 ${r.res.count} 人）`));
@@ -366,7 +394,7 @@ async function createSplit(c, name) {
   const { env, send } = c;
   if (await current(c)) return send(text('這個群組已經有進行中的分帳區了。'));
   const sid = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, '0')).join('');
-  const creatorName = await profileName(c, c.uid);
+  const creatorName = (await profileName(c, c.uid)) || fallbackName(c.uid);
   const r = await splitCall(env, sid, 'init', c.uid, { sid, gid: c.gid, name, creatorName, today: c.today });
   if (!r.res.ok) return send(text('建立失敗，請再試一次。'));
   await env.KV.put(curKey(c.gid), sid);

@@ -136,6 +136,19 @@ export function apply(state, op, actor, args = {}) {
       return okr(s, { count: s.members.length });
     }
 
+    case 'rename': {                                     // 改顯示名稱：本人，或建立者幫臨時成員改
+      const mid = args.mid || actor;
+      const m = s.members.find(x => x.id === mid);
+      if (!m) return fail(s, '請先加入分帳');
+      if (!canActFor(s, actor, mid)) return fail(s, '只能修改自己的名字');
+      const name = String(args.name || '').trim().slice(0, 20);
+      if (!name) return fail(s, '請輸入名字，例如：改名 小明');
+      if (s.members.some(x => x.id !== mid && x.name === name)) return fail(s, `已經有叫「${name}」的成員了`);
+      if (args.auto && !/^成員/.test(m.name)) return okr(s);   // 自動更新只覆蓋預設名稱
+      m.name = name;
+      return okr(s, { name });
+    }
+
     case 'addTemp': {
       if (closed) return fail(s, '這個分帳區已經結束了');
       if (!isMember(s, actor)) return fail(s, '請先加入分帳，再新增臨時成員');
