@@ -6,6 +6,8 @@
  */
 import PAGE from './split-page.js';
 import { splitCall } from './split-do.js';
+import { lookupName, refreshNames } from './split-line.js';
+
 import { myShares, balances } from './split-core.js';
 import { encryptText, decryptText } from './crypto.js';
 import { withSheetLock } from './entry.js';
@@ -14,6 +16,7 @@ import { readHeaderAndIds, appendTxns, readLedger, setSetting } from './google.j
 
 /** 公開版的個人帳本綁定在哪個頻道（目前 webhook 為 /line/webhook，即 ''） */
 const chOf = (env) => env.SPLIT_CHANNEL || '';
+const lineToken = (env) => (chOf(env) === 'pub' ? env.LINE_PUB_CHANNEL_ACCESS_TOKEN : env.LINE_CHANNEL_ACCESS_TOKEN);
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
 });
@@ -112,11 +115,16 @@ export async function handleSplitApi(request, env, deps = {}) {
   try {
     switch (p.action) {
       case 'load': {
-        const r = await call('get');
+        let r = await call('get');
         if (!r.state) return json({ ok: false, error: '找不到這個分帳區，可能已經刪除了' });
+        try { if (await refreshNames(env, lineToken(env), fetchImpl, r.state)) r = await call('get'); } catch (err) { console.error('refresh names failed', String(err)); }
         return json({ ok: true, data: await view(env, r.state, uid, base) });
       }
-      case 'join': return done(await call('join', { name: who.name }));
+      case 'join': {
+        const g = await call('get');
+        const name = (g.state && await lookupName(lineToken(env), fetchImpl, g.state.gid, uid)) || who.name;
+        return done(await call('join', { name }));
+      }
       case 'addTemp': return done(await call('addTemp', { name: p.name }));
       case 'addItem': return done(await call('addItem', { desc: p.desc, amount: p.amount, payer: p.payer, parts: p.parts, shares: p.shares }));
       case 'confirm': return done(await call('confirm', { eid: p.eid }));

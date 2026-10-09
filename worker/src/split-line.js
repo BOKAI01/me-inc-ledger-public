@@ -190,33 +190,47 @@ const gidOf = (src) => src.groupId || src.roomId;
 const curKey = (gid) => `grp:${gid}`;
 const waitKey = (gid) => `grpw:${gid}`;
 
-/** 群組成員的 LINE 名稱；查不到回傳 null（並記錄 LINE 回傳的原因） */
-async function profileName(c, uid) {
-  const src = c.src;
-  const path = src.type === 'room' ? `room/${src.roomId}` : `group/${src.groupId}`;
+/**
+ * 查群組成員的 LINE 名稱；查不到回傳 null（並記錄 LINE 回傳的原因）。
+ * 注意：fetch 必須以一般函式呼叫（Workers 上用 obj.fetch() 呼叫會丟 Illegal invocation）。
+ */
+export async function lookupName(token, fetchImpl, gid, uid) {
+  if (!token || !gid || !uid) return null;
+  const doFetch = fetchImpl || fetch;
+  const path = String(gid).startsWith('R') ? `room/${gid}` : `group/${gid}`;
   const urls = [`https://api.line.me/v2/bot/${path}/member/${uid}`, `https://api.line.me/v2/bot/profile/${uid}`];
   for (const u of urls) {
     try {
-      const r = await c.fetchImpl(u, { headers: { Authorization: `Bearer ${c.token}` } });
+      const r = await doFetch(u, { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) {
         const j = await r.json();
         if (j.displayName) return String(j.displayName).trim().slice(0, 20);
       } else {
         console.error('profile lookup failed', u.replace(/U[0-9a-f]{32}/g, 'U…'), r.status, (await r.text().catch(() => '')).slice(0, 200));
       }
-    } catch (err) { console.error('profile lookup error', err); }
+    } catch (err) { console.error('profile lookup error', String(err)); }
   }
   return null;
 }
+const profileName = (c, uid) => lookupName(c.token, c.fetchImpl, c.gid, uid);
 const fallbackName = (uid) => '成員' + String(uid).slice(-4);
-const isFallback = (name) => /^成員[0-9a-f]{0,4}$/i.test(String(name || ''));
+export const isFallback = (name) => /^成員[0-9a-f]{0,4}$/i.test(String(name || ''));
 
-/** 名稱還是預設值的成員：每次互動時重新查一次 LINE 名稱 */
-async function refreshName(c, s) {
-  const m = s?.members.find(x => x.id === c.uid);
-  if (!m || !isFallback(m.name)) return;
-  const name = await profileName(c, c.uid);
-  if (name) await splitCall(c.env, s.sid, 'rename', c.uid, { mid: c.uid, name, auto: true });
+/** 名稱還是預設值的成員（非臨時成員）：重新向 LINE 查名字並更新；回傳是否有更新 */
+export async function refreshNames(env, token, fetchImpl, s) {
+  if (!s || !s.gid) return false;
+  const todo = s.members.filter(m => !m.temp && isFallback(m.name)).slice(0, 10);
+  if (!todo.length) return false;
+  let changed = false;
+  await Promise.all(todo.map(async (m) => {
+    const name = await lookupName(token, fetchImpl, s.gid, m.id);
+    if (!name) return;
+    let final = name;
+    if (s.members.some(x => x.id !== m.id && x.name === name)) final = `${name}${String(m.id).slice(-2)}`.slice(0, 20);
+    const r = await splitCall(env, s.sid, 'rename', m.id, { mid: m.id, name: final, auto: true });
+    if (r.res?.ok && r.res.name) changed = true;
+  }));
+  return changed;
 }
 
 async function current(c) {
@@ -280,6 +294,9 @@ export async function handleGroupEvent(ev, deps) {
 
   if (ev.type === 'join') return send(welcomeCard());
   if (!c.uid) return;
+  if (ev.type === 'message' || ev.type === 'postback' || ev.type === 'memberJoined') {
+    try { await refreshNames(env, c.token, c.fetchImpl, await current(c)); } catch (err) { console.error('refresh names failed', String(err)); }
+  }
 
   if (ev.type === 'message' && ev.message?.type === 'text') {
     const t = ev.message.text.trim();
@@ -297,7 +314,6 @@ export async function handleGroupEvent(ev, deps) {
       const r = await splitCall(env, s0.sid, 'rename', c.uid, { mid: c.uid, name: rn[1].trim() });
       return send(text(r.res.ok ? `✅ 已改名為「${rn[1].trim()}」` : r.res.error));
     }
-    if (plus || CMD.test(t)) { try { await refreshName(c, await current(c)); } catch (err) { console.error('refresh name failed', err); } }
     if (plus) return addEntry(c, t);
     if (!CMD.test(t)) return;                                   // 一般聊天：不回應
     if (/^(分帳說明|說明)$/.test(t)) return send(text(SPLIT_HELP));

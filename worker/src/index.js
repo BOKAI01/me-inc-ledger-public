@@ -533,7 +533,8 @@ async function wipeUser(c, bind) {
       try {   // 同時向 Google 撤銷授權
         const { decryptText } = await import('./crypto.js');
         const rt = await decryptText(env, blob);
-        await c.fetchImpl('https://oauth2.googleapis.com/revoke', {
+        const doFetch = c.fetchImpl;   // 以一般函式呼叫，避免 Workers 的 Illegal invocation
+        await doFetch('https://oauth2.googleapis.com/revoke', {
           method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({ token: rt }),
         });
