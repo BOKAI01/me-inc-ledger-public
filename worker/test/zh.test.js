@@ -88,3 +88,19 @@ test('舊帳本自動中文化：改名、翻譯、格式；日期金額不動�
   await readLedger('T', 'S', f);
   assert.equal(log.filter(x => x.endsWith(':batchUpdate POST')).length, n);
 });
+
+test('修復：資料列跑到標題列上方時，自動移回標題下方，之後寫在最後一列', async () => {
+  resetSheetCaches();
+  const row = ['9', '支出', '食 · 餐飲部', '2026-10-09', 35, '早餐', '', 0, '是', 'x', '日常'];
+  const books = { S: { '記帳明細': [row, HEADER_ZH], '設定': [['設定項目', '數值'], ['期初存款', 100]] } };
+  const f = fakeSheetsApi(books);
+  const d = await readLedger('T', 'S', f);
+  assert.deepEqual(books.S['記帳明細'][0], HEADER_ZH);
+  assert.deepEqual(books.S['記帳明細'][1], row);
+  assert.equal(d.transactions.length, 1);
+  assert.equal(d.transactions[0].client, '早餐');
+  const { header } = await readHeaderAndIds('T', 'S', f);
+  await appendTxns('T', 'S', header, [{ id: '10', type: 'outflow', category: 'food', date: '2026-10-09', amount: 80, client: '午餐', received: true, account: '' }], f);
+  assert.equal(books.S['記帳明細'].length, 3);
+  assert.equal(books.S['記帳明細'][2][5], '午餐');
+});

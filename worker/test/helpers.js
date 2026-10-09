@@ -69,12 +69,17 @@ export function fakeWorld({ rows = [], settings = { openingBalance: 0, cycleDay:
       if (u.includes(':batchGet')) {
         return Response.json({ valueRanges: [{ values: [HEADER] }, { values: [['id'], ...w.rows.map(r => [r[0]])] }] });
       }
-      if (u.includes(':append')) {
+      if (u.includes('/values/') && !u.includes(':append')) {           // 讀最後一列（values.get）
+        return Response.json({ values: [HEADER, ...w.rows].map(r => r.slice(0, 6)) });
+      }
+      if (u.includes('/values:batchUpdate')) {                            // 寫入指定列
         w.appendCalls++;
         if (appendDelay) await new Promise(r => setTimeout(r, appendDelay));
-        const body = JSON.parse(init.body);
-        w.rows.push(...body.values);
-        return Response.json({ updates: { updatedRows: 1 } });
+        for (const d of JSON.parse(init.body).data) {
+          const row = Number(decodeURIComponent(d.range).match(/!A(\d+)$/)[1]);
+          d.values.forEach((v, k) => { w.rows[row - 2 + k] = v; });
+        }
+        return Response.json({});
       }
     }
     if (u.startsWith('https://api.line.me/')) { w.replies.push(JSON.parse(init.body)); return Response.json({}); }
@@ -170,7 +175,7 @@ export function fakeSheetsApi(books, log = []) {
     const m = u.slice(API.length + 1).match(/^([^/?:]+)(.*)$/);
     const book = books[m[1]], rest = decodeURIComponent(m[2]);
     const tabs = () => Object.keys(book).filter(k => k !== '__title');
-    if (rest.startsWith('?fields=')) return Response.json({ sheets: tabs().map((title, i) => ({ properties: { title, sheetId: i } })) });
+    if (rest.startsWith('?fields=')) return Response.json({ sheets: tabs().map((title, i) => ({ properties: { title, sheetId: i, gridProperties: { rowCount: 1000 } } })) });
     if (rest.startsWith(':batchUpdate')) {
       for (const r of JSON.parse(init.body).requests) {
         const t = r.updateSheetProperties?.properties;
@@ -181,12 +186,21 @@ export function fakeSheetsApi(books, log = []) {
           Object.assign(book, Object.fromEntries(entries));
         }
         if (r.deleteDimension) book[tabs()[r.deleteDimension.range.sheetId]].splice(r.deleteDimension.range.startIndex, 1);
+        if (r.moveDimension) {
+          const { source, destinationIndex } = r.moveDimension;
+          const rows = book[tabs()[source.sheetId]];
+          const moved = rows.splice(source.startIndex, source.endIndex - source.startIndex);
+          rows.splice(destinationIndex - moved.length, 0, ...moved);
+        }
       }
       return Response.json({});
     }
     if (rest.startsWith('/values:batchGet')) {
       const ranges = [...rest.matchAll(/ranges=([^&]+)/g)].map(x => x[1]);
       return Response.json({ valueRanges: ranges.map(a1 => ({ values: get(book, a1) })) });
+    }
+    if (rest.startsWith('/values/') && !rest.includes(':append') && (init.method || 'GET') === 'GET') {
+      return Response.json({ values: get(book, rest.slice(8).split('?')[0]) });
     }
     if (rest.startsWith('/values:batchUpdate')) {
       for (const d of JSON.parse(init.body).data) put(book, decodeURIComponent(d.range), d.values);

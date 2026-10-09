@@ -175,3 +175,15 @@ test('keygen 頁面：腳本語法正確，會產生 43 字元金鑰', async () 
   new Function('document', 'window', 'navigator', js)(fakeDoc, {}, {});
   assert.match(el.textContent, /^[A-Za-z0-9_-]{43}$/);
 });
+
+test('使用說明頁：可開啟、歡迎卡片與「說明」都帶連結', async () => {
+  const E = env();
+  const r = await worker.fetch(new Request('https://bot.test/guide'), E, {});
+  const html = await r.text();
+  assert.equal(r.status, 200);
+  for (const s of ['開始使用', '午餐 120', '撥款 儲蓄 3000', '和朋友分帳', '刪除我的資料']) assert.ok(html.includes(s), s);
+  const w = world();
+  const deps = { ch: 'pub', base: 'https://bot.test', fetch: w.fetch, today: '2026-10-08' };
+  await handleEvent({ type: 'follow', replyToken: 'r', source: { userId: 'Uguide000000000000000000000000001' } }, E, deps);
+  assert.match(JSON.stringify(w.last()), /https:\/\/bot\.test\/guide/);
+});
