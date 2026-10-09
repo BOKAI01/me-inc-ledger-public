@@ -8,6 +8,7 @@ import PAGE from './split-page.js';
 import { splitCall } from './split-do.js';
 import { myShares, balances } from './split-core.js';
 import { encryptText, decryptText } from './crypto.js';
+import { withSheetLock } from './entry.js';
 import { tokenFor, bindKey, obKey, needsRelink } from './oauth.js';
 import { readHeaderAndIds, appendTxns, readLedger, setSetting } from './google.js';
 
@@ -162,6 +163,7 @@ export async function handleSplitApi(request, env, deps = {}) {
         const pick = myShares(s, uid).filter(x => want.has(x.id) && !already.has(x.id));
         if (!pick.length) return json({ ok: false, error: '請至少勾選一筆尚未轉入的項目' });
         const token = await tokenFor(env, b, fetchImpl);
+        await withSheetLock(env, b.sheetId, async () => {
         const { header, ids } = await readHeaderAndIds(token, b.sheetId, fetchImpl);
         const have = new Set(ids), createdAt = new Date().toISOString();
         const txns = pick.map(x => ({
@@ -169,6 +171,7 @@ export async function handleSplitApi(request, env, deps = {}) {
           client: x.desc, description: `分帳：${s.name}`, paymentTerm: 0, received: true, createdAt, account: '',
         })).filter(t => !have.has(t.id));
         await appendTxns(token, b.sheetId, header, txns, fetchImpl);
+        });
         const r = await call('transferred', { eids: pick.map(x => x.id) });
         if (!r.res.ok) return json({ ok: false, error: r.res.error });
         const out = await view(env, r.state, uid, base);

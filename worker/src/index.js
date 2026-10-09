@@ -8,7 +8,7 @@ import { parseEntry, parseDateOnly, guessCategory, allocEntry } from './parse.js
 import { readHeaderAndIds, readLedger, appendTxns, setSetting, GoogleAuthError, SheetAccessError } from './google.js';
 import { tokenFor, AuthRevokedError, needsRelink, bindKey, tokKey, obKey, authLink, handleAuthStart, handleAuthCallback, privacyPage, page } from './oauth.js';
 import { computePockets, computeSummary, taipeiToday, catLabel, fmt } from './ledger.js';
-import { Entry, entryCall } from './entry.js';
+import { Entry, entryCall, withSheetLock } from './entry.js';
 import { handleApi } from './api.js';
 import { Split } from './split-do.js';
 import { handleGroupEvent, tutorialCard, withQuickReply } from './split-line.js';
@@ -253,6 +253,7 @@ async function confirmWrite(env, pid, uid, fetchImpl) {
 
   try {
     const token = await tokenFor(env, rec.ledger || { sheetId: rec.sheetId }, fetchImpl);
+    await withSheetLock(env, rec.sheetId, async () => {
     const { header, ids } = await readHeaderAndIds(token, rec.sheetId, fetchImpl);
     const have = new Set(ids);
     const createdAt = new Date().toISOString();
@@ -262,6 +263,7 @@ async function confirmWrite(env, pid, uid, fetchImpl) {
       createdAt, account: e.account || '',
     }));
     await appendTxns(token, rec.sheetId, header, txns, fetchImpl);
+    });
   } catch (err) {
     await entryCall(env, pid, 'release');
     console.error('write failed', err);

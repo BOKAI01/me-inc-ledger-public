@@ -85,11 +85,15 @@ const migrating = new Map();         // sheetId → 中文化檢查的 Promise�
 
 export async function sheetTabs(token, sheetId, fetchImpl = fetch) {
   if (tabCache.has(sheetId)) return tabCache.get(sheetId);
-  const j = await sheetsFetch(token, `/${sheetId}?fields=sheets.properties(sheetId,title)`, {}, fetchImpl);
+  const j = await sheetsFetch(token, `/${sheetId}?fields=sheets.properties(sheetId,title,gridProperties.rowCount)`, {}, fetchImpl);
   const props = (j.sheets || []).map(x => x.properties);
   const titles = props.map(p => p.title);
   const pick = (zh, en, i) => (titles.includes(zh) ? zh : titles.includes(en) ? en : titles[i] || en);
-  const t = { txn: pick(TAB_TXN, TAB_TXN_EN, 0), set: pick(TAB_SET, TAB_SET_EN, 1), gids: Object.fromEntries(props.map(p => [p.title, p.sheetId])) };
+  const t = {
+    txn: pick(TAB_TXN, TAB_TXN_EN, 0), set: pick(TAB_SET, TAB_SET_EN, 1),
+    gids: Object.fromEntries(props.map(p => [p.title, p.sheetId])),
+    rows: Object.fromEntries(props.map(p => [p.title, p.gridProperties?.rowCount || 0])),
+  };
   tabCache.set(sheetId, t);
   return t;
 }
@@ -108,7 +112,10 @@ export async function ensureZh(token, sheetId, fetchImpl = fetch) {
 async function migrate(token, sheetId, fetchImpl) {
   let t;
   try { t = await sheetTabs(token, sheetId, fetchImpl); } catch (err) { migrating.delete(sheetId); throw err; }
-  if (t.txn === TAB_TXN && t.set === TAB_SET) return t;        // 已是中文（改名是最後一步，代表內容也已轉好）
+  if (t.txn === TAB_TXN && t.set === TAB_SET) {                // 已是中文（改名是最後一步，代表內容也已轉好）
+    await fixHeaderTop(token, sheetId, t, fetchImpl);
+    return t;
+  }
   try {
     const j = await sheetsFetch(token,
       `/${sheetId}/values:batchGet?ranges=${rngIn(t.txn, 'A:Z')}&ranges=${rngIn(t.set, 'A:C')}&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`, {}, fetchImpl);
@@ -153,7 +160,7 @@ async function migrate(token, sheetId, fetchImpl) {
     reqs.push(...formatRequests(gTxn, gSet, keys));
     if (reqs.length) {
       await sheetsFetch(token, `/${sheetId}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests: reqs }) }, fetchImpl);
-      const nt = { txn: TAB_TXN, set: TAB_SET, gids: { ...t.gids, [TAB_TXN]: gTxn, [TAB_SET]: gSet } };
+      const nt = { txn: TAB_TXN, set: TAB_SET, gids: { ...t.gids, [TAB_TXN]: gTxn, [TAB_SET]: gSet }, rows: { ...t.rows, [TAB_TXN]: t.rows[t.txn], [TAB_SET]: t.rows[t.set] } };
       tabCache.set(sheetId, nt);
       Object.assign(t, nt);
     }
@@ -163,6 +170,53 @@ async function migrate(token, sheetId, fetchImpl) {
     console.error('zh migration failed', sheetId, err);
   }
   return t;
+}
+
+/**
+ * 修復：標題列被擠到下面、上方出現資料列時（舊版用 append 寫入可能發生），把那些資料列移回標題列下方。
+ */
+export async function fixHeaderTop(token, sheetId, t, fetchImpl = fetch) {
+  try {
+    const j = await sheetsFetch(token, `/${sheetId}/values/${rngIn(t.txn, 'A1:A50')}?majorDimension=ROWS`, {}, fetchImpl);
+    const col = (j.values || []).map(r => String(r[0] ?? '').trim());
+    const h = col.findIndex(v => v === '編號' || v === 'id');
+    if (h <= 0) return false;
+    const gid = t.gids[t.txn];
+    await sheetsFetch(token, `/${sheetId}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests: [
+      { moveDimension: { source: { sheetId: gid, dimension: 'ROWS', startIndex: 0, endIndex: h }, destinationIndex: h + 1 } },
+      { repeatCell: { range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { textFormat: { bold: true } } }, fields: 'userEnteredFormat.textFormat.bold' } },
+      { repeatCell: { range: { sheetId: gid, startRowIndex: 1, endRowIndex: h + 1 }, cell: { userEnteredFormat: { textFormat: { bold: false } } }, fields: 'userEnteredFormat.textFormat.bold' } },
+    ] }) }, fetchImpl);
+    console.log('header moved back to top', sheetId, h);
+    return true;
+  } catch (err) {
+    console.error('fix header failed', sheetId, err);
+    return false;
+  }
+}
+
+/**
+ * 在工作表最後一列的下一列寫入（不用 append：append 會自己猜表格範圍，可能寫到標題列上方）。
+ * 呼叫端需持有該帳本的寫入鎖，避免兩筆同時寫到同一列。
+ */
+export async function appendRows(token, sheetId, tab, rows, fetchImpl = fetch) {
+  if (!rows.length) return null;
+  const j = await sheetsFetch(token, `/${sheetId}/values/${rngIn(tab, 'A:F')}?majorDimension=ROWS`, {}, fetchImpl);
+  const start = (j.values || []).length + 1;
+  const need = start + rows.length - 1;
+  const t = await sheetTabs(token, sheetId, fetchImpl);
+  const have = t.rows?.[tab] || 0;
+  if (have && need > have) {
+    const add = need - have + 200;
+    await sheetsFetch(token, `/${sheetId}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests: [
+      { appendDimension: { sheetId: t.gids[tab], dimension: 'ROWS', length: add } },
+    ] }) }, fetchImpl);
+    t.rows[tab] = have + add;
+  }
+  await sheetsFetch(token, `/${sheetId}/values:batchUpdate`, { method: 'POST', body: JSON.stringify({
+    valueInputOption: 'RAW', data: [{ range: `'${tab}'!A${start}`, values: rows }],
+  }) }, fetchImpl);
+  return { start };
 }
 
 /** 凍結標題列、標題粗體、隱藏系統欄位、金額千分位 */
@@ -283,9 +337,7 @@ export async function writeCells(token, sheetId, cells, fetchImpl = fetch) {
 
 /** 附加一列到任意工作表 */
 export async function appendRow(token, sheetId, sheetName, row, fetchImpl = fetch) {
-  return sheetsFetch(token,
-    `/${sheetId}/values/${encodeURIComponent(`'${sheetName}'!A1`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
-    { method: 'POST', body: JSON.stringify({ values: [row] }) }, fetchImpl);
+  return appendRows(token, sheetId, sheetName, [row], fetchImpl);
 }
 
 /** 取得工作表的數字 id（刪除列需要） */
@@ -322,9 +374,7 @@ export async function appendTxns(token, sheetId, header, txns, fetchImpl = fetch
     const v = txn[k] === undefined ? '' : txn[k];
     return zh && v !== '' ? toSheet(k, v) : zh && k === 'account' ? toSheet(k, '') : v;
   }));
-  return sheetsFetch(token,
-    `/${sheetId}/values/${rngIn(tabs.txn, 'A1')}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
-    { method: 'POST', body: JSON.stringify({ values }) }, fetchImpl);
+  return appendRows(token, sheetId, tabs.txn, values, fetchImpl);
 }
 export const appendTxn = (token, sheetId, header, txn, fetchImpl = fetch) =>
   appendTxns(token, sheetId, header, [txn], fetchImpl);

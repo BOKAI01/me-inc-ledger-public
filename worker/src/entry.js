@@ -101,3 +101,18 @@ export async function entryCall(env, pid, op, data) {
   });
   return res.json();
 }
+
+/** 同一本帳的寫入依序執行（Entry Durable Object 當鎖） */
+export async function withSheetLock(env, sheetId, fn) {
+  const name = 'lock:' + sheetId;
+  const owner = crypto.randomUUID();
+  const deadline = Date.now() + 15000;
+  for (;;) {
+    const r = await entryCall(env, name, 'lock', { owner, ttl: 20000 });
+    if (r.ok) break;
+    if (Date.now() > deadline) throw new Error('帳本忙碌中，請稍後再試');
+    await new Promise(res => setTimeout(res, 150));
+  }
+  try { return await fn(); }
+  finally { await entryCall(env, name, 'unlock', { owner }).catch(() => {}); }
+}

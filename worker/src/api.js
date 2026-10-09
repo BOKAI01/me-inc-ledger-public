@@ -9,7 +9,7 @@ import { tokenFor } from './oauth.js';
 import {
   readLedger, appendTxns, writeCells, deleteRow, txnCell, setSetting,
 } from './google.js';
-import { entryCall } from './entry.js';
+import { withSheetLock } from './entry.js';
 
 const DUP_WINDOW_MS = 60 * 1000;
 const SETTABLE = new Set(['cycleDay', 'fundTarget', 'openingBalance']);
@@ -163,20 +163,8 @@ export function scanDuplicates(rows) {
   return groups;
 }
 
-/* ---------- 寫入鎖：同一本帳的修改依序執行 ---------- */
-async function withLock(env, sheetId, fn) {
-  const name = 'lock:' + sheetId;
-  const owner = crypto.randomUUID();
-  const deadline = Date.now() + 15000;
-  for (;;) {
-    const r = await entryCall(env, name, 'lock', { owner, ttl: 20000 });
-    if (r.ok) break;
-    if (Date.now() > deadline) throw new Error('帳本忙碌中，請稍後再試');
-    await new Promise(res => setTimeout(res, 150));
-  }
-  try { return await fn(); }
-  finally { await entryCall(env, name, 'unlock', { owner }).catch(() => {}); }
-}
+/* 寫入鎖：同一本帳的修改依序執行 */
+const withLock = withSheetLock;
 
 async function clearGasCache(env, fetchImpl) {
   if (!env.LEGACY_GAS_URL) return;
