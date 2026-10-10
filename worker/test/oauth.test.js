@@ -29,6 +29,10 @@ function world() {
     if (u === 'https://sheets.googleapis.com/v4/spreadsheets' && init.method === 'POST') w.createdBy = init.headers.Authorization;
     const sr = await sheets(url, init);
     if (sr) return sr;
+    if (u === 'https://api.line.me/oauth2/v2.1/verify') {
+      const t = new URLSearchParams(String(init.body)).get('id_token');
+      return t.startsWith('tok-') ? Response.json({ sub: t.slice(4), name: '測試者', exp: Date.now() / 1000 + 3600 }) : new Response('bad', { status: 400 });
+    }
     if (u.startsWith('https://api.line.me/')) { w.replies.push(JSON.parse(init.body)); return Response.json({}); }
     throw new Error('unexpected ' + u);
   };
@@ -41,6 +45,7 @@ function env() {
   return {
     TOKEN_ENC_KEY: KEY, GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'csec',
     LINE_PUB_CHANNEL_SECRET: 's', LINE_PUB_CHANNEL_ACCESS_TOKEN: 't', LINE_PUB_BASIC_ID: '@pub',
+    SPLIT_CHANNEL: 'pub', LINE_LOGIN_CHANNEL_ID: '2000000000', SITE_LIFF_ID: '2000000000-siteABCD',
     KV: fakeKV(), ENTRY: fakeEntryNS(),
   };
 }
@@ -94,7 +99,7 @@ test('開通全流程：歡迎 → Google 登入 → 自動建帳本 → 存款 
   assert.equal(bind.sheetId, 'NEW'); assert.equal(bind.auth, 'oauth');
   const stored = E.KV.m.get(`tok:pub:${UID}`);
   assert.ok(stored.startsWith('v1.') && !stored.includes('RT-secret'));        // 權杖加密保存
-  assert.ok(E.KV.m.get(`api:${bind.apiKey}`));
+  assert.equal(bind.apiKey, undefined);                                         // 不再產生連結金鑰
 
   // 回到 LINE
   await say('完成連結');
@@ -106,7 +111,7 @@ test('開通全流程：歡迎 → Google 登入 → 自動建帳本 → 存款 
   await tap('a=obc&d=5');
   assert.match(w.last()[0].text, /開通完成/);
   const site = w.last()[1].contents.footer.contents[0].action.uri;
-  assert.match(site, /openExternalBrowser=1#api=https%3A%2F%2Fbot\.test%2Fapi%3Fkey%3D/);
+  assert.equal(site, 'https://liff.line.me/2000000000-siteABCD');               // 連結不含任何金鑰
   const settings = Object.fromEntries(w.sheets.NEW['設定'].slice(1).map(r => [r[0], r[1]]));
   assert.equal(settings['期初存款'], 52000); assert.equal(settings['結算日'], 5);
   assert.equal(E.KV.m.has(`ob:pub:${UID}`), false);
@@ -123,11 +128,60 @@ test('開通全流程：歡迎 → Google 登入 → 自動建帳本 → 存款 
   await say('餘額');
   assert.match(w.last()[0].text, /帳戶總額 \$51,880/);
 
-  // 網站 API 也走使用者權杖
-  const fd = new FormData(); fd.append('payload', JSON.stringify({ action: 'load' }));
-  const r = await worker.fetch(new Request(`https://bot.test/api?key=${bind.apiKey}`, { method: 'POST', body: fd }), E, { waitUntil() {} });
-  const j = await r.json();
+  // 網站：用 LINE 登入換登入憑證，再用憑證呼叫 API（走使用者自己的 Google 權杖）
+  const sess = await login(E, w, 'tok-' + UID);
+  assert.equal(sess.ok, true, sess.message);
+  const j = await callSite(E, sess.data.session, 'load');
   assert.equal(j.ok, true); assert.equal(j.data.transactions.length, 1); assert.equal(j.data.openingBalance, 52000);
+});
+
+async function login(E, w, idToken) {
+  globalThis.fetch = w.fetch;
+  return (await worker.fetch(new Request('https://bot.test/api/session', { method: 'POST', body: JSON.stringify({ idToken }) }), E, { waitUntil() {} })).json();
+}
+async function callSite(E, session, action, extra = {}, url = 'https://bot.test/api') {
+  const fd = new FormData(); fd.append('payload', JSON.stringify({ action, ...extra }));
+  const headers = session ? { Authorization: `Bearer ${session}` } : {};
+  return (await worker.fetch(new Request(url, { method: 'POST', body: fd, headers }), E, { waitUntil() {} })).json();
+}
+
+test('帳本網站登入：只認 LINE 身分、未開通拒絕、登出所有裝置、舊金鑰過渡期', async () => {
+  const U1 = 'Usite00000000000000000000000001', U2 = 'Usite00000000000000000000000002';
+  const w = world(), E = env();
+  w.sheets.S1 = { Transactions: [HEADER], Settings: [['key', 'value'], ['openingBalance', 100]] };
+  E.KV.m.set(`tok:pub:${U1}`, await encryptText(E, 'RT'));
+  E.KV.m.set(`bind:pub:${U1}`, JSON.stringify({ sheetId: 'S1', auth: 'oauth', tok: `tok:pub:${U1}`, apiKey: 'k'.repeat(24) }));
+  E.KV.m.set(`api:${'k'.repeat(24)}`, JSON.stringify({ sheetId: 'S1', auth: 'oauth', tok: `tok:pub:${U1}` }));
+
+  assert.equal((await callSite(E, '', 'load')).error, 'auth');                       // 沒登入
+  assert.equal((await callSite(E, 'x'.repeat(43), 'load')).error, 'auth');           // 假憑證
+  assert.equal((await login(E, w, 'forged')).error, 'auth');                         // 假 LINE 身分
+  assert.equal((await login(E, w, 'tok-' + U2)).error, 'notBound');                  // 別人（未開通）拿到連結也進不來
+
+  const s1 = (await login(E, w, 'tok-' + U1)).data.session;
+  const s2 = (await login(E, w, 'tok-' + U1)).data.session;                          // 第二台裝置
+  assert.equal((await callSite(E, s1, 'load')).data.openingBalance, 100);
+  assert.ok(![...E.KV.m.values()].some(v => String(v).includes(s1)));                // 憑證只當作鍵，不外洩在值裡
+
+  await callSite(E, s1, 'x', {}, 'https://bot.test/api/logout');                       // 登出這台
+  assert.equal((await callSite(E, s1, 'load')).error, 'auth');
+  assert.equal((await callSite(E, s2, 'load')).ok, true);
+
+  assert.equal((await callSite(E, s2, 'logoutAll')).ok, true);                       // 登出所有裝置
+  assert.equal((await callSite(E, s2, 'load')).error, 'auth');
+
+  // LINE 指令「登出所有裝置」
+  const s3 = (await login(E, w, 'tok-' + U1)).data.session;
+  await handleEvent({ type: 'message', replyToken: 'r', source: { userId: U1 }, message: { type: 'text', text: '登出所有裝置' } }, E, { ch: 'pub', base: 'https://bot.test', fetch: w.fetch });
+  assert.match(w.last()[0].text, /已登出所有裝置/);
+  assert.equal((await callSite(E, s3, 'load')).error, 'auth');
+
+  // 舊的連結金鑰：過渡期內可用，之後停用
+  E.LEGACY_KEY_UNTIL = '2999-01-01T00:00:00Z';
+  assert.equal((await callSite(E, '', 'load', {}, `https://bot.test/api?key=${'k'.repeat(24)}`)).ok, true);
+  E.LEGACY_KEY_UNTIL = '2000-01-01T00:00:00Z';
+  const old = await callSite(E, '', 'load', {}, `https://bot.test/api?key=${'k'.repeat(24)}`);
+  assert.equal(old.error, 'auth'); assert.match(old.message, /舊的網站連結已停用/);
 });
 
 test('授權被撤銷 → 引導重新連結；刪除我的資料', async () => {

@@ -243,3 +243,17 @@ test('儲蓄目標與緊急備用金目標：LINE 指令設定，餘額顯示進
   await s.say('儲蓄目標');
   assert.match(s.world.lastText(), /請在後面加上金額/);
 });
+
+test('別人的記帳卡片：不能確認、取消或改分類', async () => {
+  const s = setup();
+  await s.say('午餐 120');
+  const pid = s.pidOf(s.lastCard());
+  const OTHER = 'Uother0000000000000000000000000';
+  await s.env.KV.put(`bind:${OTHER}`, JSON.stringify({ sheetId: 'OTHER', ledgerName: '主帳本' }));   // 另一位已開通的使用者
+  for (const d of [`a=no&p=${pid}`, `a=cat&p=${pid}&c=leisure`, `a=pick&p=${pid}`, `a=ok&p=${pid}`]) {
+    await s.tap(d, OTHER);
+    assert.match(s.world.lastText(), /不是你的/, d);
+  }
+  await s.tap(`a=ok&p=${pid}`);                                    // 本人仍可正常寫入
+  assert.match(s.world.lastText(), /已寫入/);
+});

@@ -8,7 +8,7 @@ import { encryptText, b64u } from '../src/crypto.js';
 import { HEADER, fakeKV, fakeEntryNS, fakeNS, fakeSheetsApi } from './helpers.js';
 
 const KEY = b64u(new Uint8Array(32).fill(9));
-const A = 'Uaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1', B = 'Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2', C = 'Ucccccccccccccccccccccccccccccc3';
+const A = 'Uaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1', B = 'Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2', C = 'Ucccccccccccccccccccccccccccccc3', D = 'Uddddddddddddddddddddddddddddddd4';
 const NAMES = { [A]: '博凱', [B]: '小明', [C]: '小華' };
 
 /* ---------- 純邏輯 ---------- */
@@ -103,14 +103,15 @@ test('結束分帳：只有建立者；銀行帳號立即刪除', () => {
 
 /* ---------- 群組流程（LINE 事件） ---------- */
 function world() {
-  const w = { replies: [], sheetCalls: 0, sheets: {} };
+  const w = { replies: [], sheetCalls: 0, sheets: {}, outsiders: new Set() };
   const sheets = fakeSheetsApi(w.sheets);
   // 模擬 Workers：fetch 若被當成物件方法呼叫（this 不是 undefined）就丟 Illegal invocation
   w.fetch = async function (url, init = {}) {
     if (this !== undefined) throw new TypeError('Illegal invocation');
     const u = String(url);
     const pm = u.match(/\/v2\/bot\/group\/G1\/member\/(\w+)$/) || u.match(/\/v2\/bot\/profile\/(\w+)$/);
-    if (pm) return w.profileDown ? new Response('{"message":"Not found"}', { status: 404 }) : Response.json({ displayName: NAMES[pm[1]] || '路人' });
+    if (pm && (w.profileDown || (w.outsiders.has(pm[1]) && u.includes('/group/')))) return new Response('{"message":"Not found"}', { status: 404 });
+    if (pm) return Response.json({ displayName: NAMES[pm[1]] || '路人' });
     if (u.startsWith('https://api.line.me/v2/bot/message/reply')) { w.replies.push(JSON.parse(init.body)); return Response.json({}); }
     if (u === 'https://api.line.me/oauth2/v2.1/verify') {
       const t = new URLSearchParams(String(init.body)).get('id_token');
@@ -210,7 +211,7 @@ test('群組：建立 → 加入 → 記帳 → 結算 → 收付款 → 結束�
   const v = await callApi(B, { action: 'load' });
   assert.equal(v.ok, true); assert.equal(v.data.member, true); assert.equal(v.data.bound, true);
   assert.deepEqual(v.data.mine.map(x => x.share), [1000]);
-  assert.match(v.data.site, /^https:\/\/site\.test\/\?openExternalBrowser=1#api=/);
+  assert.equal(v.data.site, 'https://site.test/');                       // 帳本網站連結不含金鑰
   const noBind = await callApi(C, { action: 'transfer', eids: [eid] });
   assert.match(noBind.error, /還沒開通/);
   const t1 = await callApi(B, { action: 'transfer', eids: [eid] });
@@ -248,8 +249,17 @@ test('分帳網頁：銀行帳號加密保存、成員才看得到、記住帳�
   const raw = JSON.stringify(E.SPLIT.inst.get(sid).store.get('s'));
   assert.ok(!raw.includes('123456785678'));            // 伺服器上是密文
   assert.equal(r.data.methods[A].acct, '123456785678');
-  assert.equal((await callApi(C, { action: 'load' })).data.methods[A].acct, undefined);   // 非成員看不到
-  assert.equal((await callApi(C, { action: 'load' })).data.member, false);
+  const guest = (await callApi(C, { action: 'load' })).data;                               // 非成員：只看得到名稱
+  assert.equal(guest.member, false);
+  assert.deepEqual(guest.methods, {}); assert.deepEqual(guest.entries, []); assert.equal(guest.transfers, null);
+  assert.equal(guest.name, '聚餐');
+  assert.ok(!JSON.stringify(guest).includes('123456785678') && !JSON.stringify(guest).includes('火鍋'));
+
+  // 不在群組裡的人（即使是機器人好友）拿到連結也不能加入
+  w.outsiders.add(D);
+  const out = await callApi(D, { action: 'join' });
+  assert.equal(out.ok, false); assert.match(out.error, /只有這個 LINE 群組的成員/);
+  assert.equal((await callApi(D, { action: 'load' })).data.member, false);
 
   // 群組卡片只顯示末 4 碼，複製按鈕帶完整帳號
   await say(B, '結算');
@@ -353,4 +363,29 @@ test('結算卡片：LINE Pay 收款人顯示「複製金額」與「開啟 LINE
   assert.match(json, /「＋」→「轉帳」/);
   s = apply(s, 'paid', B, { from: B, to: A }).state;                 // 付款後不再顯示
   assert.ok(!JSON.stringify(settleCard({}, s)).includes('複製金額'));
+});
+
+test('分帳卡片轉傳到別的群組：按鈕無效', async () => {
+  const w = world(), E = await env();
+  const deps = { ch: '', base: 'https://bot.test', fetch: w.fetch, today: '2026-10-08' };
+  const ev = (g, u, extra) => handleEvent({ replyToken: 'r', source: { type: 'group', groupId: g, userId: u }, ...extra }, E, deps);
+  await ev('G1', A, { type: 'postback', postback: { data: 'a=sc' } });
+  await ev('G1', A, { type: 'message', message: { type: 'text', text: '聚餐' } });
+  const sid = E.KV.m.get('grp:G1');
+  await ev('G2', C, { type: 'postback', postback: { data: `a=sj&s=${sid}` } });           // 在 G2 按 G1 的卡片
+  assert.match(w.last()[0].text, /屬於其他群組/);
+  const st = await E.SPLIT.get(sid).fetch('https://x/', { method: 'POST', body: JSON.stringify({ op: 'get' }) }).then(r => r.json());
+  assert.deepEqual(st.state.members.map(m => m.id), [A]);
+  await ev('G1', B, { type: 'postback', postback: { data: `a=sj&s=${sid}` } });           // 原群組正常
+  assert.match(w.last()[0].text, /加入了分帳/);
+});
+
+test('網頁安全標頭', async () => {
+  const E = await env();
+  for (const p of ['/split', '/guide', '/privacy']) {
+    const r = await worker.fetch(new Request('https://bot.test' + p), E, {});
+    assert.equal(r.headers.get('x-frame-options'), 'DENY', p);
+    assert.match(r.headers.get('content-security-policy'), /frame-ancestors 'none'/, p);
+    assert.equal(r.headers.get('referrer-policy'), 'no-referrer', p);
+  }
 });
