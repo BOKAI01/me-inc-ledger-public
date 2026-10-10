@@ -1,6 +1,6 @@
 /* Google Sheets：服務帳戶 JWT 授權 + 讀寫 */
 import {
-  TAB_TXN, TAB_SET, TAB_TXN_EN, TAB_SET_EN, HEADER_ZH, HIDDEN_COLS, colKey, isZhHeader, zhHeaderOf, toSheet, fromSheet,
+  TAB_TXN, TAB_SET, TAB_TXN_EN, TAB_SET_EN, HEADER_ZH, HEADER_EN, HIDDEN_COLS, colKey, isZhHeader, zhHeaderOf, toSheet, fromSheet,
   isZhSettings, setHeaderZh, settingToSheet, settingFromSheet,
 } from './zh.js';
 
@@ -109,13 +109,63 @@ export async function ensureZh(token, sheetId, fetchImpl = fetch) {
   return sheetTabs(token, sheetId, fetchImpl);
 }
 
+/**
+ * 帳本格式版本：每次調整帳本格式（新增欄位、改名…）就把版本加一，並在 upgrade() 補上對應步驟。
+ * 任何舊版本的帳本（包含重新綁定回來的舊帳本）第一次被讀取時會自動升級，使用者不用做任何事。
+ *   v1：中文化（工作表、標題、內容）
+ *   v2：補齊缺少的欄位、標題列回到第一列、記錄格式版本
+ */
+export const SCHEMA_VERSION = 2;
+
 async function migrate(token, sheetId, fetchImpl) {
+  const t = await toZh(token, sheetId, fetchImpl);
+  await upgrade(token, sheetId, t, fetchImpl);
+  return t;
+}
+
+/** 依格式版本補齊帳本：缺少的欄位、格式設定與版本紀錄。失敗不影響記帳，下次會再試 */
+async function upgrade(token, sheetId, t, fetchImpl) {
+  try {
+    const j = await sheetsFetch(token,
+      `/${sheetId}/values:batchGet?ranges=${rngIn(t.txn, 'A1:Z50')}&ranges=${rngIn(t.set, 'A:C')}&valueRenderOption=UNFORMATTED_VALUE`, {}, fetchImpl);
+    let top = j.valueRanges?.[0]?.values || [];
+    const sets = j.valueRanges?.[1]?.values || [];
+    const h = top.findIndex(r => ['編號', 'id'].includes(String(r?.[0] ?? '').trim()));
+    if (h > 0 && await fixHeaderTop(token, sheetId, t, fetchImpl)) top = [top[h]];   // 標題列被擠下去 → 先移回第一列
+    const verRow = sets.findIndex(r => settingFromSheet(r?.[0]) === 'schemaVersion');
+    const ver = verRow >= 0 ? Number(sets[verRow][1]) || 0 : 0;
+    if (ver >= SCHEMA_VERSION) return;
+
+    const zh = t.txn === TAB_TXN;
+    const header = (h >= 0 ? top[Math.min(h, top.length - 1)] : []).map(String);
+    const data = [];
+    let keys = header.map(colKey);
+    if (!header.length || h < 0) {                               // 沒有標題列（空白或被刪掉）→ 補上完整標題
+      if (top.length === 0) { data.push({ range: `'${t.txn}'!A1`, values: [zh ? HEADER_ZH : HEADER_EN] }); keys = [...HEADER_EN]; }
+    } else {
+      const missing = HEADER_EN.filter(k => !keys.includes(k));  // 舊版本沒有的欄位（例如「口袋」）補在最右邊
+      if (missing.length) {
+        data.push({ range: `'${t.txn}'!${colName(header.length)}1`, values: [missing.map(k => (zh ? zhHeaderOf([k])[0] : k))] });
+        keys = [...keys, ...missing];
+      }
+    }
+    if (sets.length === 0) data.push({ range: `'${t.set}'!A1`, values: [zh ? ['設定項目', '數值', '說明'] : ['key', 'value', 'note']] });
+    const note = '帳本格式版本（系統自動維護，請勿修改）';
+    if (verRow >= 0) data.push({ range: `'${t.set}'!B${verRow + 1}`, values: [[SCHEMA_VERSION]] });
+    else data.push({ range: `'${t.set}'!A${Math.max(sets.length, 1) + 1}`, values: [[zh ? settingToSheet('schemaVersion') : 'schemaVersion', SCHEMA_VERSION, note]] });
+    await sheetsFetch(token, `/${sheetId}/values:batchUpdate`, { method: 'POST', body: JSON.stringify({ valueInputOption: 'RAW', data }) }, fetchImpl);
+    const reqs = formatRequests(t.gids[t.txn], t.gids[t.set], keys);
+    if (reqs.length) await sheetsFetch(token, `/${sheetId}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests: reqs }) }, fetchImpl);
+    console.log('ledger upgraded', sheetId, ver, '→', SCHEMA_VERSION);
+  } catch (err) {
+    console.error('ledger upgrade failed', sheetId, err);
+  }
+}
+
+async function toZh(token, sheetId, fetchImpl) {
   let t;
   try { t = await sheetTabs(token, sheetId, fetchImpl); } catch (err) { migrating.delete(sheetId); throw err; }
-  if (t.txn === TAB_TXN && t.set === TAB_SET) {                // 已是中文（改名是最後一步，代表內容也已轉好）
-    await fixHeaderTop(token, sheetId, t, fetchImpl);
-    return t;
-  }
+  if (t.txn === TAB_TXN && t.set === TAB_SET) return t;       // 已是中文（改名是最後一步，代表內容也已轉好）
   try {
     const j = await sheetsFetch(token,
       `/${sheetId}/values:batchGet?ranges=${rngIn(t.txn, 'A:Z')}&ranges=${rngIn(t.set, 'A:C')}&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`, {}, fetchImpl);

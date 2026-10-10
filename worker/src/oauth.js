@@ -8,7 +8,8 @@
 import { getAccessToken, GoogleAuthError } from './google.js';
 import { encryptText, decryptText, signState, verifyState, randomKey } from './crypto.js';
 import { HEADER_ZH, HEADER_EN, SET_HEADER_ZH, TAB_TXN, TAB_SET } from './zh.js';
-import { formatRequests } from './google.js';
+import { formatRequests, readLedger, SCHEMA_VERSION } from './google.js';
+import { computePockets, fmt } from './ledger.js';
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -117,14 +118,16 @@ export async function handleAuthCallback(request, env, deps = {}) {
   await env.KV.put(tk, await encryptText(env, tok.refresh_token));
   accessCache.set(tk, { token: tok.access_token, exp: Math.floor(Date.now() / 1000) + Number(tok.expires_in || 3600) });
 
-  // 3. 已有帳本就沿用（重新連結），否則建立新帳本
+  // 3. 已有帳本就沿用（重新連結）；第一次連結時先找這個 Google 帳號裡有沒有以前的帳本
   const bk = bindKey(st.ch, st.uid);
   let bind = await env.KV.get(bk, 'json');
   if (!bind || bind.auth !== 'oauth') {
-    const sheetId = await createLedgerSheet(tok.access_token, fetchImpl);
-    bind = { sheetId, ledgerName: '我的帳本', auth: 'oauth', tok: tk };   // 網站改用 LINE 登入，不再產生連結金鑰
-    await env.KV.put(bk, JSON.stringify(bind));
-    await env.KV.put(obKey(st.ch, st.uid), JSON.stringify({ step: 'opening' }));
+    const found = await findLedgers(tok.access_token, fetchImpl);
+    if (found.length) {
+      await env.KV.put(pendKey(st.ch, st.uid), JSON.stringify({ ids: found.map(f => f.id) }), { expirationTtl: 3600 });
+      return choosePage(env, st, found);
+    }
+    bind = await bindNewLedger(env, st.ch, st.uid, tk, tok.access_token, fetchImpl);
   }
   const sheetUrl = `https://docs.google.com/spreadsheets/d/${bind.sheetId}/edit`;
   return page('帳本已建立 ✅', `
@@ -132,6 +135,140 @@ export async function handleAuthCallback(request, env, deps = {}) {
     <p class="mute">機器人只能存取這一份帳本。不想用時，可以到 Google 帳戶的「第三方應用程式」移除授權，帳本仍會完整留在你的雲端硬碟。</p>
     ${back ? `<a class="btn" href="${back}">回到 LINE 繼續設定</a>` : '<p>請回到 LINE，輸入「完成連結」繼續。</p>'}
     <p><a href="${sheetUrl}" target="_blank" rel="noopener">查看我的帳本</a></p>`);
+}
+
+/* ---------- 舊帳本重新綁定 ---------- */
+const pendKey = (ch, uid) => (ch ? `relink:${ch}:${uid}` : `relink:${uid}`);
+const ownKey = (sheetId) => `own:${sheetId}`;
+const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
+
+/**
+ * 找出這個 Google 帳號裡、機器人以前建立的帳本（drive.file 權限只看得到機器人自己建立的檔案）。
+ * 以工作表結構判斷，不看檔名（使用者可能改過名字）。查不到或 Drive 無法使用時回傳 []（照常建立新帳本）。
+ */
+export async function findLedgers(accessToken, fetchImpl = fetch) {
+  const doFetch = fetchImpl;
+  const h = { Authorization: `Bearer ${accessToken}` };
+  try {
+    const q = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false";
+    const r = await doFetch(`${DRIVE_FILES}?q=${encodeURIComponent(q)}&orderBy=modifiedTime desc&pageSize=10&fields=files(id,name,modifiedTime)`, { headers: h });
+    if (!r.ok) { console.error('drive search failed', r.status, (await r.text().catch(() => '')).slice(0, 200)); return []; }
+    const files = (await r.json()).files || [];
+    const out = [];
+    for (const f of files.slice(0, 5)) {
+      const m = await doFetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(f.id)}?fields=sheets.properties.title`, { headers: h });
+      if (!m.ok) continue;
+      const titles = ((await m.json()).sheets || []).map(s => s.properties?.title);
+      if (titles.some(t => t === TAB_TXN || t === 'Transactions')) out.push({ id: f.id, name: f.name, modified: String(f.modifiedTime || '').slice(0, 10) });
+    }
+    return out;
+  } catch (err) {
+    console.error('drive search error', String(err));
+    return [];
+  }
+}
+
+/** 新開一本帳本並綁定，接著走開通流程（期初存款、結算日） */
+async function bindNewLedger(env, ch, uid, tk, accessToken, fetchImpl) {
+  const sheetId = await createLedgerSheet(accessToken, fetchImpl);
+  const bind = { sheetId, ledgerName: '我的帳本', auth: 'oauth', tok: tk };   // 網站改用 LINE 登入，不再產生連結金鑰
+  await env.KV.put(bindKey(ch, uid), JSON.stringify(bind));
+  await env.KV.put(ownKey(sheetId), JSON.stringify({ ch, uid }));
+  await env.KV.put(obKey(ch, uid), JSON.stringify({ step: 'opening' }));
+  return bind;
+}
+
+/**
+ * 接回舊帳本：同一本帳本只能由一個 LINE 帳號使用，舊的 LINE 綁定會一併解除（不撤銷 Google 授權，
+ * 因為新舊是同一個 Google 帳號，撤銷會連新的授權一起失效）。設定沿用帳本裡的值，所以不用再走開通流程。
+ */
+export async function takeOverLedger(env, sheetId, ch, uid, tk) {
+  const olds = [];
+  const prev = await env.KV.get(ownKey(sheetId), 'json');
+  if (prev) olds.push(prev);
+  else if (env.KV.list) {                               // 舊版建立的帳本沒有擁有者索引：掃描一次綁定資料
+    let cursor;
+    for (let page = 0; page < 5; page++) {
+      const l = await env.KV.list({ prefix: 'bind:', cursor });
+      for (const k of l.keys || []) {
+        const b = await env.KV.get(k.name, 'json');
+        if (b?.sheetId !== sheetId) continue;
+        const parts = k.name.split(':');
+        olds.push(parts.length === 3 ? { ch: parts[1], uid: parts[2] } : { ch: '', uid: parts[1] });
+      }
+      if (l.list_complete !== false || !l.cursor) break;
+      cursor = l.cursor;
+    }
+  }
+  for (const o of olds) {
+    if (o.ch === ch && o.uid === uid) continue;
+    const ob = await env.KV.get(bindKey(o.ch, o.uid), 'json');
+    if (ob?.sheetId !== sheetId) continue;
+    const dels = [env.KV.delete(bindKey(o.ch, o.uid)), env.KV.delete(obKey(o.ch, o.uid))];
+    if (ob.tok && ob.tok !== tk) dels.push(env.KV.delete(ob.tok));
+    if (ob.apiKey) dels.push(env.KV.delete(`api:${ob.apiKey}`));
+    await Promise.all(dels);
+    console.log('ledger taken over', sheetId);
+  }
+  const bind = { sheetId, ledgerName: '我的帳本', auth: 'oauth', tok: tk, relinkedAt: new Date().toISOString() };
+  await env.KV.put(bindKey(ch, uid), JSON.stringify(bind));
+  await env.KV.put(ownKey(sheetId), JSON.stringify({ ch, uid }));
+  await env.KV.delete(obKey(ch, uid));
+  return bind;
+}
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+async function choosePage(env, st, found) {
+  const link = async (act, id) => `/auth/relink?s=${encodeURIComponent(await signState(env, { ch: st.ch, uid: st.uid, act, id }, 3600))}`;
+  const items = [];
+  for (const f of found) {
+    items.push(`<a class="btn" href="${await link('use', f.id)}">接回「${esc(f.name)}」<br><span style="font-weight:400;font-size:13px">最後修改：${esc(f.modified)}</span></a>`);
+  }
+  return page('找到你之前的帳本', `
+    <p>你的 Google 雲端硬碟裡有 ${found.length} 本之前用記帳小幫手建立的帳本。要接回繼續使用嗎？</p>
+    ${items.join('')}
+    <p class="mute">接回後，所有紀錄與設定（期初存款、結算日、目標）都會沿用，不用重新設定。舊版格式會自動更新，資料不會被改動。<br>
+    如果這本帳本之前綁定在另一個 LINE 帳號，那個帳號會自動解除綁定。</p>
+    <a class="btn" style="background:#fff;color:#1F3A2E;border:1px solid #1F3A2E" href="${await link('new', '')}">不用，建立一本新的帳本</a>`);
+}
+
+/** GET /auth/relink?s=… ：使用者在選擇頁按下按鈕 */
+export async function handleRelink(request, env, deps = {}) {
+  const fetchImpl = deps.fetch || fetch;
+  const url = new URL(request.url);
+  const st = await verifyState(env, url.searchParams.get('s'));
+  if (!st || !['use', 'new'].includes(st.act)) return page('連結已失效', '<p>這個連結已過期或無效。請回到 LINE，輸入「開始」重新連結。</p>', 400);
+  const tk = tokKey(st.ch, st.uid);
+  const back = lineBack(env, st.ch, '完成連結');
+  const existing = await env.KV.get(bindKey(st.ch, st.uid), 'json');
+  if (existing?.sheetId && !(await env.KV.get(obKey(st.ch, st.uid)))) {
+    return page('已經完成連結', `<p>你的 LINE 帳號已經連結帳本了。</p>${back ? `<a class="btn" href="${back}">回到 LINE</a>` : ''}`);
+  }
+  const pend = await env.KV.get(pendKey(st.ch, st.uid), 'json');
+  if (!pend) return page('連結已失效', '<p>選擇時間已超過一小時。請回到 LINE，輸入「開始」重新連結。</p>', 400);
+  try {
+    const token = await tokenFor(env, { auth: 'oauth', tok: tk }, fetchImpl);
+    if (st.act === 'new') {
+      await bindNewLedger(env, st.ch, st.uid, tk, token, fetchImpl);
+      await env.KV.delete(pendKey(st.ch, st.uid));
+      return page('帳本已建立 ✅', `<p>已在你的 Google 雲端硬碟建立新的帳本「${LEDGER_TITLE}」。舊帳本仍保留在雲端硬碟，不會被刪除。</p>
+        ${back ? `<a class="btn" href="${back}">回到 LINE 繼續設定</a>` : '<p>請回到 LINE，輸入「完成連結」繼續。</p>'}`);
+    }
+    if (!pend.ids.includes(st.id)) return page('連結已失效', '<p>找不到這本帳本，請回到 LINE 重新連結。</p>', 400);
+    const d = await readLedger(token, st.id, fetchImpl);          // 讀一次：舊格式在這裡自動升級
+    await takeOverLedger(env, st.id, st.ch, st.uid, tk);
+    await env.KV.delete(pendKey(st.ch, st.uid));
+    const p = computePockets(d.transactions, d.openingBalance);
+    return page('已接回你的帳本 ✅', `
+      <p>共 ${d.transactions.length} 筆紀錄，帳戶總額 <b>$${fmt(p.total)}</b>。期初存款、結算日（每月 ${d.cycleDay} 號）與目標都已沿用。</p>
+      <p class="mute">帳本已更新為最新格式，原本的紀錄沒有被改動。</p>
+      ${back ? `<a class="btn" href="${back}">回到 LINE 開始記帳</a>` : '<p>請回到 LINE 繼續使用。</p>'}`);
+  } catch (err) {
+    console.error('relink failed', err);
+    if (err instanceof AuthRevokedError) return page('授權已失效', '<p>請回到 LINE，輸入「開始」重新用 Google 登入。</p>', 400);
+    return page('連結失敗', '<p>暫時無法讀取這本帳本，請稍後再試一次，或選擇建立新的帳本。</p>', 500);
+  }
 }
 
 /* ---------- 在使用者雲端硬碟建立帳本 ---------- */
@@ -156,7 +293,7 @@ export async function createLedgerSheet(accessToken, fetchImpl = fetch) {
       valueInputOption: 'RAW',
       data: [
         { range: `'${TAB_TXN}'!A1`, values: [HEADER_ZH] },
-        { range: `'${TAB_SET}'!A1`, values: [SET_HEADER_ZH, ['期初存款', 0, '開通時的存款，計算餘額的起點'], ['結算日', 1, '每月幾號開始新的一期（1–28）'], ['緊急備用金目標', 50000, '緊急備用金的目標金額']] },
+        { range: `'${TAB_SET}'!A1`, values: [SET_HEADER_ZH, ['期初存款', 0, '開通時的存款，計算餘額的起點'], ['結算日', 1, '每月幾號開始新的一期（1–28）'], ['緊急備用金目標', 50000, '緊急備用金的目標金額'], ['格式版本', SCHEMA_VERSION, '帳本格式版本（系統自動維護，請勿修改）']] },
       ],
     }),
   });

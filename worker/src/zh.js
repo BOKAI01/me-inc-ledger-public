@@ -74,7 +74,7 @@ export function fromSheet(key, v) {
 /* ---------- 設定工作表 ---------- */
 const SET_COLS = [['key', '設定項目'], ['value', '數值'], ['note', '說明']];
 export const SET_HEADER_ZH = SET_COLS.map(c => c[1]);
-const SET = { openingBalance: '期初存款', cycleDay: '結算日', fundTarget: '緊急備用金目標', savingsTarget: '儲蓄目標', payoutAccount: '收款帳號' };
+const SET = { openingBalance: '期初存款', cycleDay: '結算日', fundTarget: '緊急備用金目標', savingsTarget: '儲蓄目標', payoutAccount: '收款帳號', schemaVersion: '格式版本' };
 const SET_R = Object.fromEntries(Object.entries(SET).map(([e, z]) => [z, e]));
 const POCKET = { savings: '儲蓄口袋', emergency: '緊急備用金', daily: '日常' };
 const POCKET_R = Object.fromEntries(Object.entries(POCKET).map(([e, z]) => [z, e]));

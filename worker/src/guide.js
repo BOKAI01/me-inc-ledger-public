@@ -58,7 +58,7 @@ a.btn{display:block;text-align:center;background:var(--brand);color:var(--card);
 </section>
 
 <section><h2><b>6</b>隱私</h2>
-<ul><li>帳本存在你自己的 Google 雲端硬碟，擁有者是你</li><li>帳本網站用你的 LINE 帳號登入，連結轉給別人也看不到你的帳本；傳 <code>登出所有裝置</code> 可讓所有裝置重新登入</li><li>機器人只能存取它建立的那一份帳本，看不到你的其他檔案</li><li>隨時傳 <code>刪除我的資料</code>，或到 Google 帳戶移除授權</li></ul>
+<ul><li>帳本存在你自己的 Google 雲端硬碟，擁有者是你</li><li>帳本網站用你的 LINE 帳號登入，連結轉給別人也看不到你的帳本；傳 <code>登出所有裝置</code> 可讓所有裝置重新登入</li><li>機器人只能存取它建立的那一份帳本，看不到你的其他檔案</li><li>隨時傳 <code>刪除我的資料</code>，或到 Google 帳戶移除授權</li><li>換了 LINE 帳號：用新帳號加入好友、按「開始設定」並用<b>同一個 Google 帳號</b>登入，就能接回原本的帳本</li></ul>
 <p class="mute"><a href="/privacy">完整隱私權說明</a></p>
 </section>
 

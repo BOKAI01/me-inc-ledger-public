@@ -6,7 +6,7 @@
 import { verifySignature, reply, text, confirmCard, batchCard, categoryQuickReply, allocQuickReply } from './line.js';
 import { parseEntry, parseDateOnly, guessCategory, allocEntry } from './parse.js';
 import { readHeaderAndIds, readLedger, appendTxns, setSetting, GoogleAuthError, SheetAccessError } from './google.js';
-import { tokenFor, AuthRevokedError, needsRelink, bindKey, tokKey, obKey, authLink, handleAuthStart, handleAuthCallback, privacyPage, page } from './oauth.js';
+import { tokenFor, AuthRevokedError, needsRelink, bindKey, tokKey, obKey, authLink, handleAuthStart, handleAuthCallback, handleRelink, privacyPage, page } from './oauth.js';
 import { computePockets, computeSummary, taipeiToday, catLabel, fmt } from './ledger.js';
 import { Entry, entryCall, withSheetLock } from './entry.js';
 import { handleApi } from './api.js';
@@ -67,6 +67,7 @@ export default {
     if (url.pathname === '/split/api') return handleSplitApi(request, env, { base: url.origin });
     if (url.pathname === '/auth/start') return handleAuthStart(request, env);
     if (url.pathname === '/auth/callback') return handleAuthCallback(request, env);
+    if (url.pathname === '/auth/relink') return handleRelink(request, env);
     if (url.pathname === '/privacy') return privacyPage(env);
     if (url.pathname === '/guide') return guidePage(env);
     if (url.pathname === '/keygen') return keygenPage();
@@ -132,6 +133,7 @@ export async function handleEvent(ev, env, deps = {}) {
   send = (msgs) => rawSend(withQuickReply(msgs, DM_QUICK));
 
   if (msgText && /^(網站|開啟網站|圖表)$/.test(msgText)) return send(siteMessage(ctxo, bind));
+  if (msgText === '完成連結') return send(text(`✅ 帳本已連結，可以直接開始記帳。\n\n${await balanceText(env, bind, fetchImpl)}`));
   if (msgText && /^(登出所有裝置|登出網站)$/.test(msgText)) {
     await logoutAll(env, C.ch, uid);
     return send(text('✅ 已登出所有裝置上的帳本網站。\n下次打開網站時，需要重新用 LINE 登入。'));
