@@ -203,11 +203,12 @@ const waitKey = (gid) => `grpw:${gid}`;
  * 查群組成員的 LINE 名稱；查不到回傳 null（並記錄 LINE 回傳的原因）。
  * 注意：fetch 必須以一般函式呼叫（Workers 上用 obj.fetch() 呼叫會丟 Illegal invocation）。
  */
-export async function lookupName(token, fetchImpl, gid, uid) {
+export async function lookupName(token, fetchImpl, gid, uid, opts = {}) {
   if (!token || !gid || !uid) return null;
   const doFetch = fetchImpl || fetch;
   const path = String(gid).startsWith('R') ? `room/${gid}` : `group/${gid}`;
-  const urls = [`https://api.line.me/v2/bot/${path}/member/${uid}`, `https://api.line.me/v2/bot/profile/${uid}`];
+  const urls = [`https://api.line.me/v2/bot/${path}/member/${uid}`];
+  if (!opts.groupOnly) urls.push(`https://api.line.me/v2/bot/profile/${uid}`);   // groupOnly：只認群組成員
   for (const u of urls) {
     try {
       const r = await doFetch(u, { headers: { Authorization: `Bearer ${token}` } });
@@ -348,6 +349,11 @@ export async function handleGroupEvent(ev, deps) {
   const p = new URLSearchParams(ev.postback?.data || '');
   const a = p.get('a'), sid = p.get('s') || '';
   if (sid && !/^[a-f0-9]{12}$/.test(sid)) return;
+  if (sid) {                                       // 卡片按鈕只在建立分帳區的那個群組有效（防止卡片被轉傳到別的群組使用）
+    const g = await splitCall(env, sid, 'get', '');
+    if (!g.state) return send(text('找不到這個分帳區，可能已經刪除了。'));
+    if (g.state.gid !== gid) return send(text('這張卡片屬於其他群組的分帳區，在這裡無法使用。'));
+  }
   const call = (op, args) => splitCall(env, sid, op, c.uid, { today: c.today, ...args });
   const recalcNote = (r) => (r.res.recalc ? '\n帳目有變動，已重新結算，付款狀態已重設。傳「結算」看最新結果。' : '');
 

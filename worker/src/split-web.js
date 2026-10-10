@@ -11,7 +11,7 @@ import { lookupName, refreshNames } from './split-line.js';
 import { myShares, balances } from './split-core.js';
 import { encryptText, decryptText } from './crypto.js';
 import { withSheetLock } from './entry.js';
-import { tokenFor, bindKey, obKey, needsRelink } from './oauth.js';
+import { tokenFor, bindKey, obKey, needsRelink, SECURITY_HEADERS } from './oauth.js';
 import { readHeaderAndIds, appendTxns, readLedger, setSetting } from './google.js';
 
 /** 公開版的個人帳本綁定在哪個頻道（目前 webhook 為 /line/webhook，即 ''） */
@@ -24,7 +24,7 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
 export function splitPage(env) {
   const cfg = JSON.stringify({ liffId: env.LIFF_ID || '', basicId: env.LINE_BASIC_ID || '' }).replace(/</g, '\\u003c');
   return new Response(PAGE.replace('/*__CFG__*/null', cfg), {
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...SECURITY_HEADERS },
   });
 }
 
@@ -54,14 +54,23 @@ async function bound(env, uid) {
   return b;
 }
 
-function siteUrl(env, base, b) {
-  if (!b?.apiKey || !env.SITE_URL) return '';
-  return `${env.SITE_URL}?openExternalBrowser=1#api=${encodeURIComponent(`${base}/api?key=${b.apiKey}`)}`;
+/** 帳本網站：用 LINE 身分登入，連結本身不含任何金鑰 */
+export function siteLink(env) {
+  if (env.SITE_LIFF_ID) return `https://liff.line.me/${env.SITE_LIFF_ID}`;
+  return env.SITE_URL || '';
 }
 
 /** 給網頁的資料：只有成員看得到完整帳號；結束後帳號已刪除 */
 async function view(env, s, uid, base) {
   const member = s.members.some(m => m.id === uid);
+  if (!member) {                                   // 非成員只看得到分帳區名稱，看不到明細與帳號
+    const creator = s.members.find(m => m.id === s.creator);
+    return {
+      sid: s.sid, name: s.name, status: s.status, creator: s.creator, retain: null, me: uid, member: false,
+      members: creator ? [{ id: creator.id, name: creator.name, temp: false }] : [],
+      entries: [], balances: {}, transfers: null, methods: {}, transferred: [], mine: [], bound: false, site: '',
+    };
+  }
   const methods = {};
   for (const [mid, m] of Object.entries(s.methods || {})) {
     const out = { type: m.type };
@@ -79,7 +88,7 @@ async function view(env, s, uid, base) {
     entries: s.entries.filter(e => e.status === 'ok' || e.status === 'pending'),
     balances: balances(s), transfers: s.transfers, methods,
     transferred: s.transferred[uid] || [], mine: myShares(s, uid),
-    bound: !!b, site: siteUrl(env, base, b),
+    bound: !!b, site: b ? siteLink(env) : '',
   };
 }
 
@@ -120,9 +129,11 @@ export async function handleSplitApi(request, env, deps = {}) {
         try { if (await refreshNames(env, lineToken(env), fetchImpl, r.state)) r = await call('get'); } catch (err) { console.error('refresh names failed', String(err)); }
         return json({ ok: true, data: await view(env, r.state, uid, base) });
       }
-      case 'join': {
+      case 'join': {                               // 只有該 LINE 群組的成員可以加入（向 LINE 確認）
         const g = await call('get');
-        const name = (g.state && await lookupName(lineToken(env), fetchImpl, g.state.gid, uid)) || who.name;
+        if (!g.state) return json({ ok: false, error: '找不到這個分帳區' });
+        const name = await lookupName(lineToken(env), fetchImpl, g.state.gid, uid, { groupOnly: true });
+        if (!name) return json({ ok: false, error: '只有這個 LINE 群組的成員可以加入分帳。請確認你在群組裡，或請群組成員在群組內按「加入分帳」。' });
         return done(await call('join', { name }));
       }
       case 'addTemp': return done(await call('addTemp', { name: p.name }));

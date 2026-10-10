@@ -10,13 +10,14 @@ import {
   readLedger, appendTxns, writeCells, deleteRow, txnCell, setSetting,
 } from './google.js';
 import { withSheetLock } from './entry.js';
+import { bearer, bindFromSession, legacyKeyAllowed, logoutAll, createSession, deleteSession } from './session.js';
 
 const DUP_WINDOW_MS = 60 * 1000;
 const SETTABLE = new Set(['cycleDay', 'fundTarget', 'savingsTarget', 'openingBalance']);
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Access-Control-Max-Age': '86400',
 };
 
@@ -43,13 +44,41 @@ export async function handleApi(request, env, ctx, deps = {}) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const fetchImpl = deps.fetch || fetch;
   const url = new URL(request.url);
-  const key = url.searchParams.get('key') || '';
-  const bind = key.length >= 16 ? await env.KV.get(`api:${key}`, 'json') : null;
-  if (!bind || !bind.sheetId) return json({ ok: false, error: 'API 金鑰無效' });
+  if (url.pathname === '/api/session') {             // 用 LINE ID Token 換登入憑證
+    if (request.method !== 'POST') return json({ ok: false, error: '請用 POST' });
+    let body = {};
+    try { body = await request.json(); } catch { return json({ ok: false, error: '請求格式錯誤' }); }
+    return json(await createSession(env, String(body.idToken || ''), fetchImpl));
+  }
+  if (url.pathname === '/api/logout') {
+    await deleteSession(env, bearer(request));
+    return json({ ok: true, data: { loggedOut: true } });
+  }
+  if (url.pathname !== '/api') return json({ ok: false, error: '不支援的路徑' });
+  const AUTH = (message) => json({ ok: false, error: 'auth', message });
+  let bind = null, sess = null;
+  const token = bearer(request);
+  if (token) {                                       // 新方式：LINE 登入後取得的登入憑證
+    const r = await bindFromSession(env, token);
+    if (!r) return AUTH('登入已過期，請重新登入');
+    ({ bind, sess } = r);
+  } else {                                           // 舊方式：寫在連結裡的金鑰（過渡期後停用）
+    const key = url.searchParams.get('key') || '';
+    if (!key) return AUTH('請先用 LINE 登入');
+    if (!legacyKeyAllowed(env)) return AUTH('舊的網站連結已停用，請在 LINE 傳「網站」重新開啟');
+    bind = key.length >= 16 ? await env.KV.get(`api:${key}`, 'json') : null;
+    if (!bind || !bind.sheetId) return json({ ok: false, error: 'API 金鑰無效' });
+  }
 
   let p;
   try { p = await readPayload(request, url); } catch { return json({ ok: false, error: '請求格式錯誤' }); }
   if (!p || !p.action) return json({ ok: false, error: '缺少 action 參數' });
+
+  if (p.action === 'logoutAll') {
+    if (!sess) return AUTH('請先用 LINE 登入');
+    await logoutAll(env, sess.ch, sess.uid);
+    return json({ ok: true, data: { loggedOut: true } });
+  }
 
   try {
     const data = await runAction(p, bind, env, fetchImpl);

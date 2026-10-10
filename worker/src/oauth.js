@@ -122,9 +122,7 @@ export async function handleAuthCallback(request, env, deps = {}) {
   let bind = await env.KV.get(bk, 'json');
   if (!bind || bind.auth !== 'oauth') {
     const sheetId = await createLedgerSheet(tok.access_token, fetchImpl);
-    const apiKey = randomKey(24);
-    bind = { sheetId, ledgerName: '我的帳本', auth: 'oauth', tok: tk, apiKey };
-    await env.KV.put(`api:${apiKey}`, JSON.stringify({ sheetId, auth: 'oauth', tok: tk }));
+    bind = { sheetId, ledgerName: '我的帳本', auth: 'oauth', tok: tk };   // 網站改用 LINE 登入，不再產生連結金鑰
     await env.KV.put(bk, JSON.stringify(bind));
     await env.KV.put(obKey(st.ch, st.uid), JSON.stringify({ step: 'opening' }));
   }
@@ -175,6 +173,15 @@ export async function createLedgerSheet(accessToken, fetchImpl = fetch) {
 }
 
 /* ---------- 頁面 ---------- */
+/** 所有 HTML 頁面共用的安全標頭：禁止被其他網站嵌入、不外送來源網址、強制 HTTPS */
+export const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+  'Referrer-Policy': 'no-referrer',
+  'Strict-Transport-Security': 'max-age=31536000',
+};
+
 export function lineBack(env, ch, msg) {
   const id = ch === 'pub' ? env.LINE_PUB_BASIC_ID : env.LINE_BASIC_ID;
   return id ? `https://line.me/R/oaMessage/${encodeURIComponent(id)}/?${encodeURIComponent(msg)}` : '';
@@ -191,7 +198,7 @@ h1{font-size:22px;color:#1F3A2E;margin:0 0 16px}
 .mute{color:#6B6B6B;font-size:14px} a{color:#1F3A2E}
 h2{font-size:17px;margin:24px 0 6px;color:#1F3A2E} li{margin:4px 0}
 </style></head><body><main><h1>${title}</h1>${body}</main></body></html>`;
-  return new Response(html, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+  return new Response(html, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...SECURITY_HEADERS } });
 }
 
 export function privacyPage(env) {

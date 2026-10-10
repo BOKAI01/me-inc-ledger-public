@@ -14,6 +14,7 @@ import { Split } from './split-do.js';
 import { handleGroupEvent, tutorialCard, withQuickReply } from './split-line.js';
 import { splitPage, handleSplitApi } from './split-web.js';
 import { guidePage } from './guide.js';
+import { logoutAll } from './session.js';
 
 export { Entry, Split };
 
@@ -39,6 +40,7 @@ const HELP = [
   '・摘要：本期收支',
   '・網站：開啟你的帳本網站',
   '・我的帳本：開啟 Google 試算表',
+  '・登出所有裝置：讓所有裝置上的帳本網站重新登入',
   '・隱私：查看隱私重點',
   '・開分帳：和朋友在 LINE 群組分帳',
 ].join('\n');
@@ -60,7 +62,7 @@ export default {
     if (url.pathname === '/health') return new Response('ok', { headers: { 'Content-Type': 'text/plain' } });
     if (url.pathname === '/line/webhook' && request.method === 'POST') return webhook(request, env, ctx, '');
     if (url.pathname === '/line/webhook/pub' && request.method === 'POST') return webhook(request, env, ctx, 'pub');
-    if (url.pathname === '/api') return handleApi(request, env, ctx);
+    if (url.pathname === '/api' || url.pathname === '/api/session' || url.pathname === '/api/logout') return handleApi(request, env, ctx);
     if (url.pathname === '/split') return splitPage(env);
     if (url.pathname === '/split/api') return handleSplitApi(request, env, { base: url.origin });
     if (url.pathname === '/auth/start') return handleAuthStart(request, env);
@@ -130,6 +132,10 @@ export async function handleEvent(ev, env, deps = {}) {
   send = (msgs) => rawSend(withQuickReply(msgs, DM_QUICK));
 
   if (msgText && /^(網站|開啟網站|圖表)$/.test(msgText)) return send(siteMessage(ctxo, bind));
+  if (msgText && /^(登出所有裝置|登出網站)$/.test(msgText)) {
+    await logoutAll(env, C.ch, uid);
+    return send(text('✅ 已登出所有裝置上的帳本網站。\n下次打開網站時，需要重新用 LINE 登入。'));
+  }
   if (msgText && /^(我的帳本|試算表)$/.test(msgText)) return send(text(`📄 你的帳本：\nhttps://docs.google.com/spreadsheets/d/${bind.sheetId}/edit`));
   if (msgText && /^(重新連結|重新授權)$/.test(msgText) && bind.auth === 'oauth') return send(await authCard(ctxo, true));
   const ledgerName = bind.ledgerName || '主帳本';
@@ -183,6 +189,10 @@ export async function handleEvent(ev, env, deps = {}) {
     const a = p.get('a'), pid = p.get('p');
     const i = Number(p.get('i')) || 0;
     if (!pid || !/^[0-9a-f]{16}$/.test(pid)) return;
+    if (a !== 'ok') {                                // 取消、改分類也只限卡片本人（確認寫入另有檢查）
+      const own = await entryCall(env, pid, 'get');
+      if (own.ok && own.rec?.uid && own.rec.uid !== uid) return send(text('這張卡片不是你的。'));
+    }
 
     if (a === 'ok') {
       const r = await confirmWrite(env, pid, uid, fetchImpl);
@@ -460,19 +470,18 @@ function askCycle(n, retry) {
   qr([1, 5, 10, 15, 20, 25].map(d => [`${d} 號`, `a=obc&d=${d}`, `每月 ${d} 號`])));
 }
 
-export function siteLink(c, bind) {
-  const site = c.env.SITE_URL || SITE_DEFAULT;
-  const api = `${c.base}/api?key=${bind.apiKey}`;
-  return `${site}?openExternalBrowser=1#api=${encodeURIComponent(api)}`;
+/** 帳本網站連結：不含任何金鑰，打開後用 LINE 身分登入（轉傳給別人也只會看到他自己的帳本） */
+export function siteLink(c) {
+  if (c.env.SITE_LIFF_ID) return `https://liff.line.me/${c.env.SITE_LIFF_ID}`;
+  return c.env.SITE_URL || SITE_DEFAULT;
 }
 
 function siteMessage(c, bind) {
-  if (!bind.apiKey) return text('你的帳本網站：' + (c.env.SITE_URL || SITE_DEFAULT) + '\n（API 網址請在網站設定中填入）');
   return bubble('📊 你的帳本網站', '#1F3A2E', [
     '在網站可以看圖表、各期比較，並修改或刪除記錄。',
-    note('這個連結含有你的專屬金鑰，等同帳本鑰匙，請不要分享給別人。'),
+    note('用你的 LINE 帳號登入，只有你本人看得到。用電腦開啟時，請按「用 LINE 登入」。'),
   ], [
-    uriBtn('開啟帳本網站', siteLink(c, bind), true),
+    uriBtn('開啟帳本網站', siteLink(c), true),
     uriBtn('開啟 Google 試算表', `https://docs.google.com/spreadsheets/d/${bind.sheetId}/edit`),
   ]);
 }

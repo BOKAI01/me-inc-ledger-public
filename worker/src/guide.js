@@ -1,4 +1,5 @@
 /* 使用說明頁（/guide）：加入好友後從歡迎卡片開啟，或傳「說明」取得連結 */
+import { SECURITY_HEADERS } from './oauth.js';
 
 export function guidePage(env) {
   const basic = env.LINE_BASIC_ID || '';
@@ -57,11 +58,11 @@ a.btn{display:block;text-align:center;background:var(--brand);color:var(--card);
 </section>
 
 <section><h2><b>6</b>隱私</h2>
-<ul><li>帳本存在你自己的 Google 雲端硬碟，擁有者是你</li><li>機器人只能存取它建立的那一份帳本，看不到你的其他檔案</li><li>隨時傳 <code>刪除我的資料</code>，或到 Google 帳戶移除授權</li></ul>
+<ul><li>帳本存在你自己的 Google 雲端硬碟，擁有者是你</li><li>帳本網站用你的 LINE 帳號登入，連結轉給別人也看不到你的帳本；傳 <code>登出所有裝置</code> 可讓所有裝置重新登入</li><li>機器人只能存取它建立的那一份帳本，看不到你的其他檔案</li><li>隨時傳 <code>刪除我的資料</code>，或到 Google 帳戶移除授權</li></ul>
 <p class="mute"><a href="/privacy">完整隱私權說明</a></p>
 </section>
 
 ${chat ? `<a class="btn" href="${chat}">回到 LINE 開始記帳</a>` : ''}
 </main></body></html>`;
-  return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300' } });
+  return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', ...SECURITY_HEADERS } });
 }
