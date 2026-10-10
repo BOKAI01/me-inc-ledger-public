@@ -2,6 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8" />
+<meta name="referrer" content="no-referrer" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <title>Me, Inc. 個人營運帳本</title>
 
@@ -148,32 +149,26 @@ svg{display:block}
 <body>
 <div id="root"><div class="boot">載入中⋯</div></div>
 <script>
-/* 從 LINE 開啟時，網址 #api=… 會自動帶入個人 API 網址（# 後面的內容不會送到伺服器） */
+/* 網站設定：帳本後台與 LINE 登入（LIFF）。網址裡不再帶任何金鑰 */
+window.MEINC = { api: 'https://me-inc-ledger-public.ss107419062.workers.dev', liffId: '2011943819-qYFtgT7i', basicId: '@353ktrhx' };
 try{
-  var mh = location.hash.match(/(?:^#|&)api=([^&]+)/);
-  if (mh) {
-    var nu = decodeURIComponent(mh[1]);
-    if (/^https:\/\/[\w.-]+\.workers\.dev\/api\?key=[\w-]{16,}$/.test(nu) && localStorage.getItem('meinc_api_url') !== nu) {
-      localStorage.setItem('meinc_api_url', nu);
-      localStorage.removeItem('meinc_data_cache');      // 換了帳本，舊的畫面快取不能沿用
-      localStorage.removeItem('meinc_offline_queue');   // 舊帳本的待送佇列不能寫進新帳本
-    }
-    history.replaceState(null, '', location.pathname + location.search);
-  }
+  /* 舊版連結的 #api=…（含金鑰）已停用：立刻從網址與瀏覽器紀錄清掉，也刪除舊的保存 */
+  if (/(^#|&)api=/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
+  localStorage.removeItem('meinc_api_url');
 }catch(e){}
 try{
-  var u = localStorage.getItem('meinc_api_url');
+  var s = localStorage.getItem('meinc_session');
   var q = localStorage.getItem('meinc_offline_queue');
-  if (u && (!q || q === '[]')) {
+  if (s && (!q || q === '[]')) {
     var fd = new FormData(); fd.append('payload', '{"action":"load"}');
     var ctl = new AbortController();
     setTimeout(function(){ ctl.abort(); }, 25000);
-    window.__boot = fetch(u, { method:'POST', body:fd, redirect:'follow', signal:ctl.signal })
+    window.__boot = fetch(window.MEINC.api + '/api', { method:'POST', body:fd, headers:{ Authorization:'Bearer ' + s }, signal:ctl.signal })
       .then(function(r){ return r.json(); }).catch(function(){ return null; });
   }
 }catch(e){}
 </script>
 <link rel="modulepreload" href="./vendor.js">
-<script type="module" src="./app.js"></script>
+<script type="module" src="./app.js?v=10"></script>
 </body>
 </html>

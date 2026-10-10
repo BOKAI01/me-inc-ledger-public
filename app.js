@@ -5,7 +5,11 @@ import { html, render, useState, useEffect, useMemo, useCallback, useRef } from 
    v2 — 無 CDN 依賴、期間制、防重複
    ============================================================ */
 
-const K_API    = 'meinc_api_url';
+const K_SESS   = 'meinc_session';     // LINE 登入後取得的登入憑證（不是帳本金鑰，可隨時登出作廢）
+const K_OWNER  = 'meinc_owner';       // 目前登入者，換人時清掉上一位的畫面快取
+const K_NAME   = 'meinc_name';
+const CFG = (typeof window !== 'undefined' && window.MEINC) || {};
+const API = (CFG.api || '') + '/api';
 const K_QUEUE  = 'meinc_offline_queue';
 const K_CACHE  = 'meinc_data_cache';
 const K_CYCLE  = 'meinc_cycle_day';   // 僅作離線快取，真值存於 Google Sheet
@@ -130,21 +134,28 @@ function isInPeriod(tx, periodKey, cycleDay) {
 }
 
 /* ---------- API ---------- */
-const callApi = async (url, action, payload = {}, ms = 25000) => {
-  if (!url) throw new Error('尚未設定 API 網址');
+const getSess = () => { try { return localStorage.getItem(K_SESS) || ''; } catch { return ''; } };
+const authLost = () => {                       // 登入失效：清掉憑證，畫面回到登入
+  try { localStorage.removeItem(K_SESS); } catch {}
+  window.dispatchEvent(new Event('meinc-auth'));
+};
+const callApi = async (action, payload = {}, ms = 25000) => {
+  const sess = getSess();
+  if (!sess) { authLost(); throw Object.assign(new Error('請先用 LINE 登入'), { auth: true }); }
   const fd = new FormData();
   fd.append('payload', JSON.stringify({ action, ...payload }));
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), ms);
   try {
-    const res = await fetch(url, { method: 'POST', body: fd, redirect: 'follow', signal: ctl.signal });
+    const res = await fetch(API, { method: 'POST', body: fd, headers: { Authorization: 'Bearer ' + sess }, signal: ctl.signal });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
+    if (!json.ok && json.error === 'auth') { authLost(); throw Object.assign(new Error(json.message || '請重新登入'), { auth: true }); }
     if (!json.ok) throw new Error(json.error || '未知錯誤');
     return json.data;
   } finally { clearTimeout(timer); }
 };
-const api = (action, payload = {}) => callApi(localStorage.getItem(K_API), action, payload);
+const api = (action, payload = {}) => callApi(action, payload);
 
 /* index.html 已在載入程式的同時就發出 load 請求，這裡直接接手，省下解析時間 */
 let bootReq = (typeof window !== 'undefined' && window.__boot) || null;
@@ -153,23 +164,34 @@ const apiLoad = async () => {
     const p = bootReq; bootReq = null;
     try { const j = await p; if (j && j.ok && j.data) return j.data; } catch (e) {}
   }
-  const url = localStorage.getItem(K_API);
-  try {
-    return await callApi(url, 'load', {}, 20000);
-  } catch (e) {
-    // POST 失敗時改走 GET，行動網路上偶爾只有其中一條通
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 15000);
-    try {
-      const res = await fetch(url + (url.includes('?') ? '&' : '?') + 'action=load',
-                              { method: 'GET', redirect: 'follow', signal: ctl.signal });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || '未知錯誤');
-      return json.data;
-    } finally { clearTimeout(timer); }
-  }
+  return callApi('load', {}, 20000);
 };
+
+/* ---------- LINE 登入（LIFF）---------- */
+const loadScript = (src) => new Promise((res, rej) => {
+  const el = document.createElement('script'); el.src = src; el.onload = res; el.onerror = () => rej(new Error('無法載入 LINE 登入元件，請檢查網路'));
+  document.head.appendChild(el);
+});
+/** 用 LINE 身分登入 → 向伺服器換登入憑證。會轉到 LINE 登入頁時回傳 null */
+async function lineLogin(force) {
+  if (!/^\d+-\w+$/.test(CFG.liffId || '') || !CFG.api) throw new Error('網站尚未完成登入設定');
+  if (!window.liff) await loadScript('https://static.line-scdn.net/liff/edge/2/sdk.js');
+  const liff = window.liff;
+  await liff.init({ liffId: CFG.liffId });
+  if (force && liff.isLoggedIn() && !liff.isInClient()) liff.logout();
+  if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.origin + location.pathname }); return null; }
+  const idToken = liff.getIDToken();
+  const r = await fetch(CFG.api + '/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken }) }).then(x => x.json());
+  if (!r.ok) throw Object.assign(new Error(r.message || r.error || '登入失敗'), { code: r.error });
+  const owner = String(r.data.owner || '');
+  if (localStorage.getItem(K_OWNER) !== owner) {          // 換了使用者：上一位的快取與待送資料都不能沿用
+    localStorage.removeItem(K_CACHE); localStorage.removeItem(K_QUEUE);
+    localStorage.setItem(K_OWNER, owner);
+  }
+  localStorage.setItem(K_SESS, r.data.session);
+  localStorage.setItem(K_NAME, r.data.name || '');
+  return r.data;
+}
 
 /* ---------- 離線佇列（單線同步，避免重複送出）---------- */
 const getQueue = () => { try { return JSON.parse(localStorage.getItem(K_QUEUE) || '[]'); } catch { return []; } };
@@ -221,47 +243,39 @@ const ICal   = (s = 14) => ic(html`<rect x="3" y="4" width="18" height="18" rx="
 /* ============================================================
    設定精靈
    ============================================================ */
-function SetupScreen({ onSaved }) {
-  const [url, setUrl] = useState('');
-  const [testing, setTesting] = useState(false);
+function LoginScreen({ onDone }) {
+  const [state, setState] = useState('working');          // working | error | notBound
   const [error, setError] = useState('');
-
-  const test = async () => {
-    setError(''); setTesting(true);
+  const run = useCallback(async (force) => {
+    setState('working'); setError('');
     try {
-      const u = url.trim();
-      if (!/^https:\/\/(script\.google\.com\/|[\w.-]+\.workers\.dev\/api\?key=)/.test(u)) throw new Error('網址格式不正確');
-      await callApi(u, 'load');
-      localStorage.setItem(K_API, u);
-      onSaved(u);
+      const d = await lineLogin(force);
+      if (d) onDone(d.session);
     } catch (e) {
-      const msg = String(e.message || e);
-      setError(/Failed to fetch|NetworkError|abort/i.test(msg)
-        ? '連線失敗。最常見原因：部署存取權必須設為「所有人 Anyone」。'
-        : msg);
-    } finally { setTesting(false); }
-  };
+      setError(String(e.message || e));
+      setState(e.code === 'notBound' ? 'notBound' : 'error');
+    }
+  }, [onDone]);
+  useEffect(() => { run(false); }, [run]);
+  const friend = CFG.basicId ? 'https://line.me/R/ti/p/' + encodeURIComponent(CFG.basicId) : '';
 
   return html`
     <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
       <div class="card" style="max-width:420px;width:100%">
         <div class="card-hd tinted" style="display:block">
-          <div class="row" style="gap:6px;margin-bottom:6px;color:var(--ink)">${IBag(15)}<span class="brand">Setup</span></div>
+          <div class="row" style="gap:6px;margin-bottom:6px;color:var(--ink)">${IBag(15)}<span class="brand">Login</span></div>
           <div style="font-size:19px;font-weight:700;color:var(--ink)">歡迎來到 Me, Inc.</div>
-          <div class="sub" style="margin-top:2px">連結你的帳本</div>
+          <div class="sub" style="margin-top:2px">用你的 LINE 帳號登入，只有你本人看得到自己的帳本</div>
         </div>
         <div class="card-bd" style="display:flex;flex-direction:column;gap:14px">
-          <ol class="note" style="padding-left:18px;margin:0">
-            <li>在 LINE 加入記帳機器人好友，完成 3 步開通</li>
-            <li>在 LINE 傳「網站」，點「開啟帳本網站」就會自動登入</li>
-            <li>或把專屬 API 網址貼到下方</li>
-          </ol>
-          <input class="inp mono" type="text" value=${url} onInput=${e => setUrl(e.target.value)}
-                 placeholder="https://….workers.dev/api?key=… 或 Apps Script /exec 網址" style="font-size:12px" />
-          ${error && html`<div class="err">${error}</div>`}
-          <button class="btn btn-p" disabled=${testing || !url.trim()} onClick=${test}>
-            ${testing ? '測試連線中⋯' : '開始營運'}
-          </button>
+          ${state === 'working' && html`<div class="note">正在用 LINE 登入⋯</div>`}
+          ${state === 'notBound' && html`
+            <div class="err">${error}</div>
+            ${friend && html`<a class="btn btn-p" style="text-align:center;text-decoration:none" href=${friend}>加入記帳機器人好友</a>`}`}
+          ${state === 'error' && html`
+            <div class="err">${error}</div>
+            <button class="btn btn-p" onClick=${() => run(true)}>用 LINE 重新登入</button>`}
+          <div class="mini">網站不會保存你的 LINE 密碼。在 LINE 傳「登出所有裝置」，可讓所有裝置上的網站重新登入。</div>
         </div>
       </div>
     </div>`;
@@ -644,7 +658,7 @@ function DuplicateSheet({ groups, loading, onClose, onDelete, onRescan }) {
 /* ============================================================
    設定
    ============================================================ */
-function SettingsSheet({ apiUrl, openingBalance, currentBalance, cycleDay, fundTarget, savingsTarget, onChangeSavingsTarget, onChangeTarget, onChangeCycle, onClose, onReset, onSaveOpening, onDedupe }) {
+function SettingsSheet({ userName, onLogout, onLogoutAll, openingBalance, currentBalance, cycleDay, fundTarget, savingsTarget, onChangeSavingsTarget, onChangeTarget, onChangeCycle, onClose, onSaveOpening, onDedupe }) {
   const [tgt, setTgt] = useState(String(fundTarget));
   const [tgtDirty, setTgtDirty] = useState(false);
   const [sTgt, setSTgt] = useState(String(savingsTarget || 0));
@@ -733,9 +747,13 @@ function SettingsSheet({ apiUrl, openingBalance, currentBalance, cycleDay, fundT
           </div>
 
           <div>
-            <div class="lbl" style="margin-bottom:6px">後台 API 網址</div>
-            <div class="code">${apiUrl}</div>
-            <button class="btn btn-g" style="width:100%;margin-top:8px" onClick=${onReset}>重新設定 API 網址</button>
+            <div class="lbl" style="margin-bottom:6px">登入身分</div>
+            <div style="font-size:15px;font-weight:600;color:var(--ink)">${userName || 'LINE 使用者'}</div>
+            <div class="row" style="gap:8px;margin-top:8px">
+              <button class="btn btn-g" style="flex:1" onClick=${onLogout}>登出這台裝置</button>
+              <button class="btn btn-g" style="flex:1" onClick=${onLogoutAll}>登出所有裝置</button>
+            </div>
+            <div class="mini">懷疑別人用過你的帳號時，按「登出所有裝置」，所有裝置都要重新用 LINE 登入</div>
           </div>
 
           <div>
@@ -760,7 +778,8 @@ function SettingsSheet({ apiUrl, openingBalance, currentBalance, cycleDay, fundT
    主程式
    ============================================================ */
 function App() {
-  const [apiUrl, setApiUrl] = useState(() => localStorage.getItem(K_API));
+  const [sess, setSess] = useState(() => getSess());
+  useEffect(() => { const h = () => setSess(''); window.addEventListener('meinc-auth', h); return () => window.removeEventListener('meinc-auth', h); }, []);
   const cached = useMemo(() => { try { return JSON.parse(localStorage.getItem(K_CACHE) || 'null'); } catch { return null; } }, []);
 
   const [transactions, setTransactions] = useState(() => (cached?.transactions) || []);
@@ -793,7 +812,7 @@ function App() {
 
   /* 讀取（單線，避免並行造成佇列重複沖銷） */
   const reload = useCallback(async () => {
-    if (!apiUrl) return;
+    if (!sess) return;
     if (loadingRef.current) return loadingRef.current;
     setSyncing(true); setLoadState('loading');
     loadingRef.current = (async () => {
@@ -831,9 +850,9 @@ function App() {
       }
     })();
     return loadingRef.current;
-  }, [apiUrl, showToast]);
+  }, [sess, showToast]);
 
-  useEffect(() => { if (apiUrl) reload(); }, [apiUrl, reload]);
+  useEffect(() => { if (sess) reload(); }, [sess, reload]);
 
   /* 連線狀態 + 回到前景時背景更新 */
   useEffect(() => {
@@ -1049,7 +1068,17 @@ function App() {
   };
 
   /* ---- 畫面 ---- */
-  if (!apiUrl) return html`<${SetupScreen} onSaved=${setApiUrl} />`;
+  const logout = async (all) => {
+    const t = getSess();
+    try {
+      if (all) await api('logoutAll');
+      else await fetch(CFG.api + '/api/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + t } });
+    } catch (e) {}
+    try { localStorage.removeItem(K_SESS); localStorage.removeItem(K_CACHE); if (window.liff && window.liff.isLoggedIn && !window.liff.isInClient()) window.liff.logout(); } catch (e) {}
+    setShowSettings(false); setSess('');
+  };
+
+  if (!sess) return html`<${LoginScreen} onDone=${setSess} />`;
 
   const label = getPeriodLabel(period, cycleDay);
   const isCur = period === getCurrentPeriod(cycleDay);
@@ -1301,11 +1330,11 @@ function App() {
       ${showDup && html`<${DuplicateSheet} groups=${dupGroups} loading=${dupLoading}
         onDelete=${deleteDuplicate} onRescan=${scanDuplicates} onClose=${() => setShowDup(false)} />`}
 
-      ${showSettings && html`<${SettingsSheet} apiUrl=${apiUrl} openingBalance=${openingBalance}
+      ${showSettings && html`<${SettingsSheet} userName=${localStorage.getItem(K_NAME) || ''} onLogout=${() => logout(false)} onLogoutAll=${() => { if (confirm('確定要登出所有裝置嗎？每台裝置都需要重新用 LINE 登入。')) logout(true); }} openingBalance=${openingBalance}
         currentBalance=${currentBalance} cycleDay=${cycleDay} fundTarget=${fundTarget} savingsTarget=${savingsTarget}
         onChangeTarget=${changeTarget} onChangeSavingsTarget=${changeSavingsTarget} onChangeCycle=${changeCycle} onSaveOpening=${saveOpening} onDedupe=${scanDuplicates}
         onClose=${() => setShowSettings(false)}
-        onReset=${() => { localStorage.removeItem(K_API); setApiUrl(null); }} />`}
+        />`}
     </div>`;
 }
 

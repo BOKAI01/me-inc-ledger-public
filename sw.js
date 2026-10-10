@@ -2,11 +2,11 @@
    HTML：網路優先（2.5 秒逾時就退回快取）→ 改版後一開就是新版
    程式與圖示：快取優先 + 背景更新 → 秒開
    後台 API：完全不攔截 */
-const CACHE = 'meinc-v9';
+const CACHE = 'meinc-v10';
 const ASSETS = [
   './',
   './index.html',
-  './app.js',
+  './app.js?v=10',
   './vendor.js',
   './manifest.json',
   './icons/icon-192.png',
