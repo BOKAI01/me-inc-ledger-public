@@ -15,6 +15,8 @@ CONTACT_EMAIL = "ss107419062@gmail.com"
 # 分帳網頁（LIFF）：在 LINE Login 頻道建立 LIFF 後填入
 LIFF_ID = "2011943819-wRnnwyq5"
 LINE_LOGIN_CHANNEL_ID = "2011943819"
+# 帳本網站（LIFF，端點為 SITE_URL）：網站用 LINE 身分登入
+SITE_LIFF_ID = "2011943819-qYFtgT7i"
 
 [observability]
 enabled = true
