@@ -31,7 +31,7 @@ function world() {
       return Response.json({ files: (w.drive || []).map(id => ({ id, name: w.sheets[id]?.__title || 'Me, Inc. 記帳本', modifiedTime: '2026-09-30T10:00:00Z' })) });
     }
     if (u.includes('/values:batchGet')) w.lastAuth = init.headers?.Authorization;
-    if (u === 'https://sheets.googleapis.com/v4/spreadsheets' && init.method === 'POST') w.createdBy = init.headers.Authorization;
+    if (u === 'https://sheets.googleapis.com/v4/spreadsheets' && init.method === 'POST') { w.createdBy = init.headers.Authorization; w.creates = (w.creates || 0) + 1; }
     const sr = await sheets(url, init);
     if (sr) return sr;
     if (u === 'https://api.line.me/oauth2/v2.1/verify') {
@@ -43,6 +43,17 @@ function world() {
   };
   w.last = () => w.replies.at(-1).messages;
   return w;
+}
+
+/** Google 回呼：先立刻收到「準備中」畫面，再自動前往 /auth/finish 完成（模擬瀏覽器的自動跳轉） */
+async function googleCallback(E, state) {
+  const cb = await worker.fetch(new Request(`https://bot.test/auth/callback?code=C&state=${encodeURIComponent(state)}`), E, {});
+  const html = await cb.text();
+  const m = html.match(/location\.replace\("([^"]+)"\)/);
+  if (!m) return { status: cb.status, html };
+  assert.match(html, /正在準備你的帳本/);
+  const r = await worker.fetch(new Request('https://bot.test' + JSON.parse(`"${m[1]}"`)), E, {});
+  return { status: r.status, html: await r.text(), next: m[1] };
 }
 
 function env() {
@@ -92,9 +103,13 @@ test('開通全流程：歡迎 → Google 登入 → 自動建帳本 → 存款 
 
   // Google 回呼
   globalThis.fetch = w.fetch;
-  const cb = await worker.fetch(new Request(`https://bot.test/auth/callback?code=C&state=${encodeURIComponent(g.searchParams.get('state'))}`), E, {});
-  const html = await cb.text();
+  const cb = await googleCallback(E, g.searchParams.get('state'));
+  const html = cb.html;
   assert.equal(cb.status, 200);
+  // 重新整理完成頁不會重複建立帳本
+  const again = await (await worker.fetch(new Request('https://bot.test' + cb.next), E, {})).text();
+  assert.match(again, /帳本已建立/);
+  assert.equal(w.creates, 1);
   assert.match(html, /帳本已建立/);
   assert.match(html, /line\.me\/R\/oaMessage\/%40pub\/\?%E5%AE%8C%E6%88%90%E9%80%A3%E7%B5%90/);
   assert.equal(w.createdBy, 'Bearer AT1');
@@ -268,8 +283,7 @@ test('舊帳本重新綁定：新 LINE 帳號用同一個 Google 登入 → 找�
   const say = (t) => handleEvent({ type: 'message', replyToken: 'r', source: { userId: NEW }, message: { type: 'text', text: t } }, E, deps);
   globalThis.fetch = w.fetch;
   const st = await signState(E, { ch: 'pub', uid: NEW, n: 'x' });
-  const cb = await worker.fetch(new Request(`https://bot.test/auth/callback?code=C&state=${encodeURIComponent(st)}`), E, {});
-  const html = await cb.text();
+  const { html } = await googleCallback(E, st);
   assert.match(html, /找到你之前的帳本/);
   assert.match(html, /我的記帳本（改過名）/);                       // 依結構判斷，不看檔名
   assert.ok(!html.includes('OTHER') && !html.includes('不是帳本'));
@@ -321,7 +335,7 @@ test('舊帳本重新綁定：選擇建立新帳本；Drive 無法搜尋時照�
   w.drive = ['OLDBOOK'];
   globalThis.fetch = w.fetch;
   const st = await signState(E, { ch: 'pub', uid: U, n: 'x' });
-  const html = await (await worker.fetch(new Request(`https://bot.test/auth/callback?code=C&state=${encodeURIComponent(st)}`), E, {})).text();
+  const { html } = await googleCallback(E, st);
   const links = [...html.matchAll(/href="(\/auth\/relink\?s=[^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'));
   const done = await (await worker.fetch(new Request('https://bot.test' + links.at(-1)), E, {})).text();   // 最後一個是「建立新的帳本」
   assert.match(done, /帳本已建立/);
@@ -335,7 +349,32 @@ test('舊帳本重新綁定：選擇建立新帳本；Drive 無法搜尋時照�
   w2.driveDown = true;
   globalThis.fetch = w2.fetch;
   const st2 = await signState(E2, { ch: 'pub', uid: U2, n: 'y' });
-  const h2 = await (await worker.fetch(new Request(`https://bot.test/auth/callback?code=C&state=${encodeURIComponent(st2)}`), E2, {})).text();
+  const h2 = (await googleCallback(E2, st2)).html;
   assert.match(h2, /帳本已建立/);
   assert.equal(JSON.parse(E2.KV.m.get(`bind:pub:${U2}`)).sheetId, 'NEW');
+});
+
+
+test('Google 登入速度：回呼立刻回應，搜尋同時進行、建立帳本只要一次呼叫', async () => {
+  const U = 'Uspeed00000000000000000000000001';
+  const w = world(), E = env();
+  for (const id of ['A1', 'A2', 'A3', 'A4', 'A5']) w.sheets[id] = { Sheet1: [['x']] };   // 雲端硬碟裡有 5 個不是帳本的試算表
+  w.drive = ['A1', 'A2', 'A3', 'A4', 'A5'];
+  const slow = async (url, init) => { if (/googleapis\.com/.test(String(url))) await new Promise(r => setTimeout(r, 100)); return w.fetch(url, init); };
+  globalThis.fetch = slow;
+  const st = await signState(E, { ch: 'pub', uid: U, n: 'x' });
+  let t0 = Date.now();
+  const cb = await worker.fetch(new Request(`https://bot.test/auth/callback?code=C&state=${encodeURIComponent(st)}`), E, {});
+  const html = await cb.text();
+  const tCallback = Date.now() - t0;
+  assert.match(html, /正在準備你的帳本/);
+  assert.ok(tCallback < 500, `回呼花了 ${tCallback}ms`);                 // 只等換權杖一次
+  const next = JSON.parse(`"${html.match(/location\.replace\("([^"]+)"\)/)[1]}"`);
+  t0 = Date.now();
+  const done = await (await worker.fetch(new Request('https://bot.test' + next), E, {})).text();
+  const tFinish = Date.now() - t0;
+  assert.match(done, /帳本已建立/);
+  assert.ok(tFinish < 900, `完成花了 ${tFinish}ms`);                     // 搜尋 + 5 個同時檢查 + 一次建立 + 背景格式
+  assert.deepEqual(w.sheets.NEW['記帳明細'][0].slice(0, 2), ['編號', '類型']);
+  assert.ok(w.sheets.NEW['設定'].some(r => r[0] === '格式版本'));
 });

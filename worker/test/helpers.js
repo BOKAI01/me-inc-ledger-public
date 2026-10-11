@@ -181,7 +181,8 @@ export function fakeSheetsApi(books, log = []) {
     if (u === API && init.method === 'POST') {
       const body = JSON.parse(init.body);
       const id = 'NEW';
-      books[id] = Object.fromEntries(body.sheets.map(s => [s.properties.title, []]));
+      const val = (c) => c.userEnteredValue?.numberValue ?? c.userEnteredValue?.stringValue ?? '';
+      books[id] = Object.fromEntries(body.sheets.map(s => [s.properties.title, (s.data?.[0]?.rowData || []).map(r => r.values.map(val))]));
       books[id].__title = body.properties.title;
       return Response.json({ spreadsheetId: id, sheets: body.sheets.map((s, i) => ({ properties: { ...s.properties, sheetId: i } })) });
     }
