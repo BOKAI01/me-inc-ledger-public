@@ -98,7 +98,7 @@ export async function handleAuthCallback(request, env, deps = {}) {
 
   // 1. 換取權杖
   const res = await fetchImpl(TOKEN_URL, {
-    method: 'POST',
+    method: 'POST', signal: timeout(10000),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       code: url.searchParams.get('code') || '', client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET,
@@ -118,23 +118,63 @@ export async function handleAuthCallback(request, env, deps = {}) {
   await env.KV.put(tk, await encryptText(env, tok.refresh_token));
   accessCache.set(tk, { token: tok.access_token, exp: Math.floor(Date.now() / 1000) + Number(tok.expires_in || 3600) });
 
-  // 3. 已有帳本就沿用（重新連結）；第一次連結時先找這個 Google 帳號裡有沒有以前的帳本
+  // 3. 已有帳本就沿用（重新連結）；第一次連結：先立刻回一個「準備中」畫面，耗時的搜尋與建立交給 /auth/finish
   const bk = bindKey(st.ch, st.uid);
-  let bind = await env.KV.get(bk, 'json');
+  const bind = await env.KV.get(bk, 'json');
   if (!bind || bind.auth !== 'oauth') {
-    const found = await findLedgers(tok.access_token, fetchImpl);
-    if (found.length) {
-      await env.KV.put(pendKey(st.ch, st.uid), JSON.stringify({ ids: found.map(f => f.id) }), { expirationTtl: 3600 });
-      return choosePage(env, st, found);
-    }
-    bind = await bindNewLedger(env, st.ch, st.uid, tk, tok.access_token, fetchImpl);
+    const s = await signState(env, { ch: st.ch, uid: st.uid, act: 'finish' }, 1800);
+    return progressPage(`/auth/finish?s=${encodeURIComponent(s)}`, '登入成功，正在準備你的帳本', '正在你的 Google 雲端硬碟尋找或建立帳本，約需 2–5 秒，請不要關閉這個畫面。');
   }
+  return createdPage(env, st, bind);
+}
+
+const timeout = (ms) => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);
+
+/** 立刻顯示的過渡畫面：先讓使用者看到進度，再自動前往實際處理的網址（重新整理也不會重複建立帳本） */
+function progressPage(next, title, sub) {
+  const u = esc(next);
+  return page(title, `
+    <style>.spin{width:36px;height:36px;border:4px solid #D9D2C3;border-top-color:#1F3A2E;border-radius:50%;animation:s 0.9s linear infinite;margin:28px auto}@keyframes s{to{transform:rotate(360deg)}}</style>
+    <div class="spin" role="status" aria-label="處理中"></div>
+    <p style="text-align:center">${sub}</p>
+    <p class="mute" style="text-align:center">超過 15 秒沒有反應？<a href="${u}">點這裡繼續</a></p>
+    <noscript><meta http-equiv="refresh" content="0;url=${u}"></noscript>
+    <script>setTimeout(function(){ location.replace(${JSON.stringify(next)}); }, 30);</script>`);
+}
+
+function createdPage(env, st, bind) {
+  const back = lineBack(env, st.ch, '完成連結');
   const sheetUrl = `https://docs.google.com/spreadsheets/d/${bind.sheetId}/edit`;
   return page('帳本已建立 ✅', `
     <p>你的帳本已經建立在<b>你自己的 Google 雲端硬碟</b>，檔名是「${LEDGER_TITLE}」。</p>
     <p class="mute">機器人只能存取這一份帳本。不想用時，可以到 Google 帳戶的「第三方應用程式」移除授權，帳本仍會完整留在你的雲端硬碟。</p>
     ${back ? `<a class="btn" href="${back}">回到 LINE 繼續設定</a>` : '<p>請回到 LINE，輸入「完成連結」繼續。</p>'}
     <p><a href="${sheetUrl}" target="_blank" rel="noopener">查看我的帳本</a></p>`);
+}
+
+/** GET /auth/finish?s=… ：搜尋舊帳本，找到就讓使用者選擇，沒有就建立新帳本。重複開啟不會重複建立 */
+export async function handleFinish(request, env, deps = {}) {
+  const fetchImpl = deps.fetch || fetch;
+  const url = new URL(request.url);
+  const st = await verifyState(env, url.searchParams.get('s'));
+  if (!st || st.act !== 'finish') return page('連結已失效', '<p>請回到 LINE，輸入「開始」重新連結。</p>', 400);
+  const existing = await env.KV.get(bindKey(st.ch, st.uid), 'json');
+  if (existing?.sheetId && existing.auth === 'oauth') return createdPage(env, st, existing);   // 已完成（例如重新整理）
+  const tk = tokKey(st.ch, st.uid);
+  try {
+    const token = await tokenFor(env, { auth: 'oauth', tok: tk }, fetchImpl);
+    const found = await findLedgers(token, fetchImpl);
+    if (found.length) {
+      await env.KV.put(pendKey(st.ch, st.uid), JSON.stringify({ ids: found.map(f => f.id) }), { expirationTtl: 3600 });
+      return choosePage(env, st, found);
+    }
+    const bind = await bindNewLedger(env, st.ch, st.uid, tk, token, fetchImpl, deps.waitUntil);
+    return createdPage(env, st, bind);
+  } catch (err) {
+    console.error('finish failed', err);
+    if (err instanceof AuthRevokedError) return page('授權已失效', '<p>請回到 LINE，輸入「開始」重新用 Google 登入。</p>', 400);
+    return page('暫時無法完成', `<p>Google 回應較慢，帳本還沒準備好。</p><a class="btn" href="${esc(url.pathname + url.search)}">再試一次</a>`, 503);
+  }
 }
 
 /* ---------- 舊帳本重新綁定 ---------- */
@@ -151,17 +191,18 @@ export async function findLedgers(accessToken, fetchImpl = fetch) {
   const h = { Authorization: `Bearer ${accessToken}` };
   try {
     const q = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false";
-    const r = await doFetch(`${DRIVE_FILES}?q=${encodeURIComponent(q)}&orderBy=modifiedTime desc&pageSize=10&fields=files(id,name,modifiedTime)`, { headers: h });
+    const r = await doFetch(`${DRIVE_FILES}?q=${encodeURIComponent(q)}&orderBy=modifiedTime desc&pageSize=10&fields=files(id,name,modifiedTime)`, { headers: h, signal: timeout(6000) });
     if (!r.ok) { console.error('drive search failed', r.status, (await r.text().catch(() => '')).slice(0, 200)); return []; }
-    const files = (await r.json()).files || [];
-    const out = [];
-    for (const f of files.slice(0, 5)) {
-      const m = await doFetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(f.id)}?fields=sheets.properties.title`, { headers: h });
-      if (!m.ok) continue;
-      const titles = ((await m.json()).sheets || []).map(s => s.properties?.title);
-      if (titles.some(t => t === TAB_TXN || t === 'Transactions')) out.push({ id: f.id, name: f.name, modified: String(f.modifiedTime || '').slice(0, 10) });
-    }
-    return out;
+    const files = ((await r.json()).files || []).slice(0, 5);
+    const checks = await Promise.all(files.map(async (f) => {      // 同時檢查，不一個一個等
+      try {
+        const m = await doFetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(f.id)}?fields=sheets.properties.title`, { headers: h, signal: timeout(5000) });
+        if (!m.ok) return null;
+        const titles = ((await m.json()).sheets || []).map(s => s.properties?.title);
+        return titles.some(t => t === TAB_TXN || t === 'Transactions') ? { id: f.id, name: f.name, modified: String(f.modifiedTime || '').slice(0, 10) } : null;
+      } catch { return null; }
+    }));
+    return checks.filter(Boolean);
   } catch (err) {
     console.error('drive search error', String(err));
     return [];
@@ -169,8 +210,8 @@ export async function findLedgers(accessToken, fetchImpl = fetch) {
 }
 
 /** 新開一本帳本並綁定，接著走開通流程（期初存款、結算日） */
-async function bindNewLedger(env, ch, uid, tk, accessToken, fetchImpl) {
-  const sheetId = await createLedgerSheet(accessToken, fetchImpl);
+async function bindNewLedger(env, ch, uid, tk, accessToken, fetchImpl, waitUntil) {
+  const sheetId = await createLedgerSheet(accessToken, fetchImpl, waitUntil);
   const bind = { sheetId, ledgerName: '我的帳本', auth: 'oauth', tok: tk };   // 網站改用 LINE 登入，不再產生連結金鑰
   await env.KV.put(bindKey(ch, uid), JSON.stringify(bind));
   await env.KV.put(ownKey(sheetId), JSON.stringify({ ch, uid }));
@@ -190,10 +231,10 @@ export async function takeOverLedger(env, sheetId, ch, uid, tk) {
     let cursor;
     for (let page = 0; page < 5; page++) {
       const l = await env.KV.list({ prefix: 'bind:', cursor });
-      for (const k of l.keys || []) {
-        const b = await env.KV.get(k.name, 'json');
+      const vals = await Promise.all((l.keys || []).map(k => env.KV.get(k.name, 'json').then(b => [k.name, b])));
+      for (const [name, b] of vals) {
         if (b?.sheetId !== sheetId) continue;
-        const parts = k.name.split(':');
+        const parts = name.split(':');
         olds.push(parts.length === 3 ? { ch: parts[1], uid: parts[2] } : { ch: '', uid: parts[1] });
       }
       if (l.list_complete !== false || !l.cursor) break;
@@ -223,14 +264,15 @@ async function choosePage(env, st, found) {
   const link = async (act, id) => `/auth/relink?s=${encodeURIComponent(await signState(env, { ch: st.ch, uid: st.uid, act, id }, 3600))}`;
   const items = [];
   for (const f of found) {
-    items.push(`<a class="btn" href="${await link('use', f.id)}">接回「${esc(f.name)}」<br><span style="font-weight:400;font-size:13px">最後修改：${esc(f.modified)}</span></a>`);
+    items.push(`<a class="btn" data-busy="正在接回，請稍候…" href="${await link('use', f.id)}">接回「${esc(f.name)}」<br><span style="font-weight:400;font-size:13px">最後修改：${esc(f.modified)}</span></a>`);
   }
   return page('找到你之前的帳本', `
     <p>你的 Google 雲端硬碟裡有 ${found.length} 本之前用記帳小幫手建立的帳本。要接回繼續使用嗎？</p>
     ${items.join('')}
     <p class="mute">接回後，所有紀錄與設定（期初存款、結算日、目標）都會沿用，不用重新設定。舊版格式會自動更新，資料不會被改動。<br>
     如果這本帳本之前綁定在另一個 LINE 帳號，那個帳號會自動解除綁定。</p>
-    <a class="btn" style="background:#fff;color:#1F3A2E;border:1px solid #1F3A2E" href="${await link('new', '')}">不用，建立一本新的帳本</a>`);
+    <a class="btn" data-busy="正在建立，請稍候…" style="background:#fff;color:#1F3A2E;border:1px solid #1F3A2E" href="${await link('new', '')}">不用，建立一本新的帳本</a>
+    <script>document.addEventListener('click',function(e){var a=e.target.closest('a[data-busy]');if(!a)return;if(window.__busy){e.preventDefault();return;}window.__busy=1;a.textContent=a.dataset.busy;document.querySelectorAll('a[data-busy]').forEach(function(x){x.style.opacity=x===a?'1':'.4';});});</script>`);
 }
 
 /** GET /auth/relink?s=… ：使用者在選擇頁按下按鈕 */
@@ -250,14 +292,16 @@ export async function handleRelink(request, env, deps = {}) {
   try {
     const token = await tokenFor(env, { auth: 'oauth', tok: tk }, fetchImpl);
     if (st.act === 'new') {
-      await bindNewLedger(env, st.ch, st.uid, tk, token, fetchImpl);
+      await bindNewLedger(env, st.ch, st.uid, tk, token, fetchImpl, deps.waitUntil);
       await env.KV.delete(pendKey(st.ch, st.uid));
       return page('帳本已建立 ✅', `<p>已在你的 Google 雲端硬碟建立新的帳本「${LEDGER_TITLE}」。舊帳本仍保留在雲端硬碟，不會被刪除。</p>
         ${back ? `<a class="btn" href="${back}">回到 LINE 繼續設定</a>` : '<p>請回到 LINE，輸入「完成連結」繼續。</p>'}`);
     }
     if (!pend.ids.includes(st.id)) return page('連結已失效', '<p>找不到這本帳本，請回到 LINE 重新連結。</p>', 400);
-    const d = await readLedger(token, st.id, fetchImpl);          // 讀一次：舊格式在這裡自動升級
-    await takeOverLedger(env, st.id, st.ch, st.uid, tk);
+    const [d] = await Promise.all([                               // 同時進行：讀帳本（舊格式在這裡自動升級）＋接手綁定
+      readLedger(token, st.id, fetchImpl),
+      takeOverLedger(env, st.id, st.ch, st.uid, tk),
+    ]);
     await env.KV.delete(pendKey(st.ch, st.uid));
     const p = computePockets(d.transactions, d.openingBalance);
     return page('已接回你的帳本 ✅', `
@@ -272,40 +316,34 @@ export async function handleRelink(request, env, deps = {}) {
 }
 
 /* ---------- 在使用者雲端硬碟建立帳本 ---------- */
-export async function createLedgerSheet(accessToken, fetchImpl = fetch) {
+/** 一次 API 呼叫就建立好帳本（工作表、標題、預設設定一起送出）；外觀格式在背景補上，不讓使用者等 */
+export async function createLedgerSheet(accessToken, fetchImpl = fetch, waitUntil) {
   const h = { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
+  const cell = (v) => ({ userEnteredValue: typeof v === 'number' ? { numberValue: v } : { stringValue: String(v) } });
+  const grid = (rows) => [{ startRow: 0, startColumn: 0, rowData: rows.map(r => ({ values: r.map(cell) })) }];
+  const settings = [SET_HEADER_ZH, ['期初存款', 0, '開通時的存款，計算餘額的起點'], ['結算日', 1, '每月幾號開始新的一期（1–28）'],
+    ['緊急備用金目標', 50000, '緊急備用金的目標金額'], ['格式版本', SCHEMA_VERSION, '帳本格式版本（系統自動維護，請勿修改）']];
   const res = await fetchImpl('https://sheets.googleapis.com/v4/spreadsheets', {
-    method: 'POST', headers: h,
+    method: 'POST', headers: h, signal: timeout(15000),
     body: JSON.stringify({
       properties: { title: LEDGER_TITLE, locale: 'zh_TW', timeZone: 'Asia/Taipei' },
       sheets: [
-        { properties: { title: TAB_TXN, gridProperties: { frozenRowCount: 1 } } },
-        { properties: { title: TAB_SET, gridProperties: { frozenRowCount: 1 } } },
+        { properties: { title: TAB_TXN, gridProperties: { frozenRowCount: 1 } }, data: grid([HEADER_ZH]) },
+        { properties: { title: TAB_SET, gridProperties: { frozenRowCount: 1 } }, data: grid(settings) },
       ],
     }),
   });
   if (!res.ok) throw new GoogleAuthError(`建立帳本失敗（HTTP ${res.status}）`);
   const j = await res.json();
   const id = j.spreadsheetId;
-  const w = await fetchImpl(`https://sheets.googleapis.com/v4/spreadsheets/${id}/values:batchUpdate`, {
-    method: 'POST', headers: h,
-    body: JSON.stringify({
-      valueInputOption: 'RAW',
-      data: [
-        { range: `'${TAB_TXN}'!A1`, values: [HEADER_ZH] },
-        { range: `'${TAB_SET}'!A1`, values: [SET_HEADER_ZH, ['期初存款', 0, '開通時的存款，計算餘額的起點'], ['結算日', 1, '每月幾號開始新的一期（1–28）'], ['緊急備用金目標', 50000, '緊急備用金的目標金額'], ['格式版本', SCHEMA_VERSION, '帳本格式版本（系統自動維護，請勿修改）']] },
-      ],
-    }),
-  });
-  if (!w.ok) throw new GoogleAuthError(`初始化帳本失敗（HTTP ${w.status}）`);
-  // 凍結標題列、隱藏系統欄位、金額千分位（失敗不影響使用）
-  try {
-    const gid = (t) => (j.sheets || []).find(x => x.properties?.title === t)?.properties?.sheetId;
-    const reqs = formatRequests(gid(TAB_TXN), gid(TAB_SET), HEADER_EN);
-    if (reqs.length) {
-      await fetchImpl(`https://sheets.googleapis.com/v4/spreadsheets/${id}:batchUpdate`, { method: 'POST', headers: h, body: JSON.stringify({ requests: reqs }) });
-    }
-  } catch (err) { console.error('format failed', err); }
+  // 粗體標題、隱藏系統欄位、金額千分位：背景處理（失敗不影響使用）
+  const gid = (t) => (j.sheets || []).find(x => x.properties?.title === t)?.properties?.sheetId;
+  const reqs = formatRequests(gid(TAB_TXN), gid(TAB_SET), HEADER_EN);
+  const fmtJob = reqs.length
+    ? fetchImpl(`https://sheets.googleapis.com/v4/spreadsheets/${id}:batchUpdate`, { method: 'POST', headers: h, body: JSON.stringify({ requests: reqs }) })
+      .catch(err => console.error('format failed', err))
+    : null;
+  if (fmtJob) { if (waitUntil) waitUntil(fmtJob); else await fmtJob; }
   return id;
 }
 

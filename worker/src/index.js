@@ -6,7 +6,7 @@
 import { verifySignature, reply, text, confirmCard, batchCard, categoryQuickReply, allocQuickReply } from './line.js';
 import { parseEntry, parseDateOnly, guessCategory, allocEntry } from './parse.js';
 import { readHeaderAndIds, readLedger, appendTxns, setSetting, GoogleAuthError, SheetAccessError } from './google.js';
-import { tokenFor, AuthRevokedError, needsRelink, bindKey, tokKey, obKey, authLink, handleAuthStart, handleAuthCallback, handleRelink, privacyPage, page } from './oauth.js';
+import { tokenFor, AuthRevokedError, needsRelink, bindKey, tokKey, obKey, authLink, handleAuthStart, handleAuthCallback, handleFinish, handleRelink, privacyPage, page } from './oauth.js';
 import { computePockets, computeSummary, taipeiToday, catLabel, fmt } from './ledger.js';
 import { Entry, entryCall, withSheetLock } from './entry.js';
 import { handleApi } from './api.js';
@@ -67,7 +67,9 @@ export default {
     if (url.pathname === '/split/api') return handleSplitApi(request, env, { base: url.origin });
     if (url.pathname === '/auth/start') return handleAuthStart(request, env);
     if (url.pathname === '/auth/callback') return handleAuthCallback(request, env);
-    if (url.pathname === '/auth/relink') return handleRelink(request, env);
+    const bg = ctx?.waitUntil ? { waitUntil: (p) => ctx.waitUntil(p) } : {};
+    if (url.pathname === '/auth/finish') return handleFinish(request, env, bg);
+    if (url.pathname === '/auth/relink') return handleRelink(request, env, bg);
     if (url.pathname === '/privacy') return privacyPage(env);
     if (url.pathname === '/guide') return guidePage(env);
     if (url.pathname === '/keygen') return keygenPage();
