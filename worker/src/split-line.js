@@ -7,6 +7,7 @@ import { decryptText } from './crypto.js';
 import { catLabel } from './ledger.js';
 import { splitCall } from './split-do.js';
 import { balances, memberName, KEEP_DAYS, DELETE_DAYS } from './split-core.js';
+import { guideCard } from './guide.js';
 
 const ORANGE = '#CF6F22', SOFT = '#FBE9D9', INK = '#1D252E', MUTED = '#5F6B78', GREEN = '#23905A';
 const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
@@ -69,12 +70,12 @@ const webBtn = (env, label, sid, tab, extra, primary) => {
 };
 
 /* ---------- 卡片 ---------- */
-export function welcomeCard() {
+export function welcomeCard(base) {
   return bubble('記帳小幫手可以幫這個群組分帳', null, [
     T('嗨，我是記帳小幫手', { weight: 'bold', size: 'md' }),
     T('我可以幫這個群組分帳：記下誰付了錢、算出誰該付誰多少。結束後，每個人可以把自己負擔的部分轉入個人帳本。'),
     note('群組裡的訊息只會記到分帳區，不會進任何人的個人帳本。'),
-  ], [pb('建立分帳區', 'a=sc', true)]);
+  ], [pb('建立分帳區', 'a=sc', true), ...(base ? [link('看分帳圖文說明', `${base}/guide#group`)] : [])]);
 }
 
 export function createdCard(env, s) {
@@ -194,7 +195,7 @@ export function tutorialCard(env) {
 }
 
 /* ---------- 事件處理 ---------- */
-const CMD = /^(開分帳|建立分帳區|分帳區|分帳|分帳總覽|結算|結束分帳|分帳說明|說明)$/;
+const CMD = /^(開分帳|建立分帳區|分帳區|分帳|分帳總覽|結算|結束分帳|分帳說明|說明|使用說明|教學)$/;
 const gidOf = (src) => src.groupId || src.roomId;
 const curKey = (gid) => `grp:${gid}`;
 const waitKey = (gid) => `grpw:${gid}`;
@@ -302,7 +303,7 @@ export async function handleGroupEvent(ev, deps) {
   };
   c.send = send;
 
-  if (ev.type === 'join') return send(welcomeCard());
+  if (ev.type === 'join') return send(welcomeCard(c.base));
   if (!c.uid) return;
   if (ev.type === 'message' || ev.type === 'postback' || ev.type === 'memberJoined') {
     try { await refreshNames(env, c.token, c.fetchImpl, await current(c)); } catch (err) { console.error('refresh names failed', String(err)); }
@@ -326,9 +327,9 @@ export async function handleGroupEvent(ev, deps) {
     }
     if (plus) return addEntry(c, t);
     if (!CMD.test(t)) return;                                   // 一般聊天：不回應
-    if (/^(分帳說明|說明)$/.test(t)) return send(text(SPLIT_HELP));
+    if (/^(分帳說明|說明|使用說明|教學)$/.test(t)) return send(c.base ? [guideCard(c.base, { group: true }), text(SPLIT_HELP)] : text(SPLIT_HELP));
     const s = await current(c);
-    if (/^(開分帳|建立分帳區|分帳區)$/.test(t)) return send(s ? createdCard(env, s) : welcomeCard());
+    if (/^(開分帳|建立分帳區|分帳區)$/.test(t)) return send(s ? createdCard(env, s) : welcomeCard(c.base));
     if (!s) return send(text('目前沒有進行中的分帳區。', qrPost([['建立分帳區', 'a=sc']])));
     if (t === '分帳' || t === '分帳總覽') return send(summaryCard(env, s));
     if (t === '結算') {

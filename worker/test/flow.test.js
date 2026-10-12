@@ -148,7 +148,9 @@ test('看不懂的訊息與說明', async () => {
   await s.say('你好');
   assert.match(s.world.lastText(), /看不懂/);
   await s.say('說明');
-  assert.match(s.world.lastText(), /記帳方式/);
+  const [g, help] = s.world.replies.at(-1).messages;
+  assert.equal(g.type, 'flex'); assert.match(JSON.stringify(g), /\/guide#personal/);   // 圖文說明卡片
+  assert.match(help.text, /記帳方式/);
 });
 
 test('撥款：卡片 → 寫入 alloc 分錄，餘額只移動口袋', async () => {

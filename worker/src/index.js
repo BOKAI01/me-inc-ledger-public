@@ -13,7 +13,7 @@ import { handleApi } from './api.js';
 import { Split } from './split-do.js';
 import { handleGroupEvent, tutorialCard, withQuickReply } from './split-line.js';
 import { splitPage, handleSplitApi } from './split-web.js';
-import { guidePage } from './guide.js';
+import { guidePage, guideCard } from './guide.js';
 import { logoutAll } from './session.js';
 
 export { Entry, Split };
@@ -107,7 +107,7 @@ export async function handleEvent(ev, env, deps = {}) {
 
   // 群組／多人聊天室：只處理分帳，絕不寫入個人帳本
   if (ev.source?.type === 'group' || ev.source?.type === 'room') {
-    return handleGroupEvent(ev, { env, token: C.token, fetchImpl, today, send });
+    return handleGroupEvent(ev, { env, token: C.token, fetchImpl, today, send, base: deps.base || env.PUBLIC_BASE_URL || '' });
   }
   if (!uid) return;
   const ctxo = { env, ch: C.ch, uid, base: deps.base || env.PUBLIC_BASE_URL || '', fetchImpl, send };
@@ -134,6 +134,7 @@ export async function handleEvent(ev, env, deps = {}) {
   const rawSend = send;
   send = (msgs) => rawSend(withQuickReply(msgs, DM_QUICK));
 
+  if (ev.type === 'follow') return send([text('歡迎回來！你的帳本還在，可以直接記帳 🙌'), guideCard(ctxo.base)]);
   if (msgText && /^(網站|開啟網站|圖表)$/.test(msgText)) return send(siteMessage(ctxo, bind));
   if (msgText === '完成連結') return send(text(`✅ 帳本已連結，可以直接開始記帳。\n\n${await balanceText(env, bind, fetchImpl)}`));
   if (msgText && /^(登出所有裝置|登出網站)$/.test(msgText)) {
@@ -163,7 +164,7 @@ export async function handleEvent(ev, env, deps = {}) {
       }
       return send(text(v > 0 ? `✅ ${label}已設為 $${fmt(v)}\n\n${await balanceText(env, bind, fetchImpl)}` : '✅ 已取消儲蓄目標'));
     }
-    if (/^(說明|幫助|help|\?|？)$/i.test(msg)) return send(text(`${HELP}\n\n📖 完整使用說明：\n${ctxo.base}/guide`));
+    if (/^(說明|使用說明|教學|幫助|help|\?|？)$/i.test(msg)) return send([guideCard(ctxo.base), text(HELP)]);
     if (/^調整/.test(msg)) return send(text('「調整」類型要等網站改版後才開放，目前請在網站上操作。'));
 
     const { entries, bad } = parseMessage(msg, today);
@@ -442,7 +443,7 @@ function welcomeCard(c) {
     '用 LINE 傳一句話就能記帳，例如「午餐 120」。',
     '資料會存在「你自己的」Google 雲端硬碟，不在我這裡。',
     '開通大約 1 分鐘，共 3 步：\n1. 連結 Google 帳號（建立你的帳本）\n2. 輸入目前存款（計算餘額的起點）\n3. 選結算日（每一期從幾號開始）',
-  ], [pbBtn('開始設定', 'a=ob_start', true), uriBtn('看使用說明', `${c.base}/guide`), uriBtn('隱私說明', `${c.base}/privacy`)]);
+  ], [pbBtn('開始設定', 'a=ob_start', true), uriBtn('看圖文使用說明', `${c.base}/guide`), uriBtn('隱私說明', `${c.base}/privacy`)]);
 }
 
 async function authCard(c, again = false) {
@@ -513,7 +514,8 @@ async function onboarding(ev, c, bind, ob, msgText) {
       return send([text('我還沒收到 Google 授權完成的通知 🤔\n請確認在 Google 頁面按了「繼續」。可以再試一次：'), await authCard(c)]);
     }
     if (pb?.get('a') === 'ob_start' || (msgText && /^(開始|開始設定|開通)$/.test(msgText))) return send(await authCard(c));
-    if (ev.type === 'follow' || ev.type === 'message') return send(welcomeCard(c));
+    if (ev.type === 'follow' || (msgText && /^(說明|使用說明|教學)$/.test(msgText))) return send([guideCard(c.base), welcomeCard(c)]);   // 剛加入：先附上圖文說明
+    if (ev.type === 'message') return send(welcomeCard(c));
     return;
   }
 

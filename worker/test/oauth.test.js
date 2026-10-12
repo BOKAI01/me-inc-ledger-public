@@ -84,7 +84,8 @@ test('開通全流程：歡迎 → Google 登入 → 自動建帳本 → 存款 
   const tap = (d) => handleEvent({ type: 'postback', replyToken: 'r', source: { userId: UID }, postback: { data: d } }, E, deps);
 
   await handleEvent({ type: 'follow', replyToken: 'r', source: { userId: UID } }, E, deps);
-  assert.match(w.last()[0].altText, /記帳機器人/);
+  assert.match(w.last()[0].altText, /圖文說明/);                       // 剛加入：先附上圖文說明
+  assert.match(w.last()[1].altText, /記帳機器人/);
   await tap('a=ob_start');
   const card = w.last()[0];
   const btn = card.contents.footer.contents[0].action;
@@ -255,7 +256,8 @@ test('使用說明頁：可開啟、歡迎卡片與「說明」都帶連結', as
   const r = await worker.fetch(new Request('https://bot.test/guide'), E, {});
   const html = await r.text();
   assert.equal(r.status, 200);
-  for (const s of ['開始使用', '午餐 120', '撥款 儲蓄 3000', '和朋友分帳', '刪除我的資料']) assert.ok(html.includes(s), s);
+  for (const s of ['個人記帳', '群組分帳', 'id="personal"', 'id="group"', '午餐 120', '確認寫入', '撥款 儲蓄 3000', '+晚餐 3000', '結算', '轉入我的帳本', '登出所有裝置', '刪除我的資料']) assert.ok(html.includes(s), s);
+  assert.ok(!/<img /.test(html));                                      // 示意圖不靠外部圖片
   const w = world();
   const deps = { ch: 'pub', base: 'https://bot.test', fetch: w.fetch, today: '2026-10-08' };
   await handleEvent({ type: 'follow', replyToken: 'r', source: { userId: 'Uguide000000000000000000000000001' } }, E, deps);

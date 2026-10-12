@@ -389,3 +389,15 @@ test('網頁安全標頭', async () => {
     assert.equal(r.headers.get('referrer-policy'), 'no-referrer', p);
   }
 });
+
+
+test('群組：加入時的歡迎卡與「說明」都附上分帳圖文說明', async () => {
+  const w = world(), E = await env();
+  const deps = { ch: '', base: 'https://bot.test', fetch: w.fetch, today: '2026-10-08' };
+  await handleEvent({ type: 'join', replyToken: 'r', source: { type: 'group', groupId: 'G9' } }, E, deps);
+  assert.match(JSON.stringify(w.last()), /https:\/\/bot\.test\/guide#group/);
+  await handleEvent({ type: 'message', replyToken: 'r', source: { type: 'group', groupId: 'G9', userId: A }, message: { type: 'text', text: '說明' } }, E, deps);
+  const [g, t] = w.last();
+  assert.equal(g.type, 'flex'); assert.match(JSON.stringify(g), /guide#group/);
+  assert.match(t.text, /群組分帳指令/);
+});
