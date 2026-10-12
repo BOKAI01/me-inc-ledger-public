@@ -15,6 +15,8 @@ import { handleGroupEvent, tutorialCard, withQuickReply } from './split-line.js'
 import { splitPage, handleSplitApi } from './split-web.js';
 import { guidePage, guideCard } from './guide.js';
 import { logoutAll } from './session.js';
+import { findPocket, MAX_POCKETS } from './pockets.js';
+import { addPocket, renamePocket, setPocketTarget, previewDelete, deletePocket, PocketError } from './pocket-ops.js';
 
 export { Entry, Split };
 
@@ -35,8 +37,15 @@ const HELP = [
   '・撥款 儲蓄 3000（日常 → 儲蓄口袋）',
   '・撥回 儲蓄 2000（儲蓄 → 日常）',
   '',
+  '👝 自訂口袋（最多 8 個）：',
+  '・口袋：查看所有口袋',
+  '・新增口袋 旅遊基金',
+  '・口袋改名 儲蓄 買房基金',
+  '・刪除口袋 旅遊基金',
+  '・旅遊基金目標 30000',
+  '',
   '其他指令：',
-  '・餘額：帳戶總額與三個口袋',
+  '・餘額：帳戶總額與各個口袋',
   '・摘要：本期收支',
   '・網站：開啟你的帳本網站',
   '・我的帳本：開啟 Google 試算表',
@@ -149,20 +158,49 @@ export async function handleEvent(ev, env, deps = {}) {
     const msg = ev.message.text.trim();
     if (/^(餘額|余額|結餘)$/.test(msg)) return send(text(await balanceText(env, bind, fetchImpl)));
     if (/^(摘要|本期|本月)$/.test(msg)) return send(text(await summaryText(env, bind, today, fetchImpl)));
-    const tg = msg.replace(/[,，\s]/g, '').match(/^(儲蓄|存款|緊急備用金|緊急|備用金)目標(\d{0,10})$/);
-    if (tg) {
-      const key = /儲蓄|存款/.test(tg[1]) ? 'savingsTarget' : 'fundTarget';
-      const label = key === 'savingsTarget' ? '儲蓄目標' : '緊急備用金目標';
-      if (!tg[2]) return send(text(`請在後面加上金額，例如：${label} 100000${key === 'savingsTarget' ? '\n（設 0 可取消儲蓄目標）' : ''}`));
-      const v = Number(tg[2]);
-      if (key === 'fundTarget' && v <= 0) return send(text('緊急備用金目標要大於 0。'));
+    /* ---------- 口袋管理 ---------- */
+    if (/^(口袋|我的口袋|口袋列表|口袋設定|管理口袋)$/.test(msg)) {
+      return send(text(`${await balanceText(env, bind, fetchImpl)}\n\n👝 管理口袋（最多 ${MAX_POCKETS} 個）：\n・新增口袋 名稱\n・口袋改名 舊名 新名\n・刪除口袋 名稱\n・名稱目標 金額`, POCKET_QR));
+    }
+    const pkOp = async (fn, ok) => {
       try {
-        await setLedgerSetting({ env, fetchImpl }, bind, key, v);
+        const r = await pocketOp(env, bind, fetchImpl, fn);
+        return send(text(`${ok(r)}\n\n${await balanceText(env, bind, fetchImpl)}`));
       } catch (err) {
-        console.error('set target failed', err);
+        if (err instanceof PocketError) return send(text(`⚠️ ${err.message}`));
+        console.error('pocket op failed', err);
         return send(text(needsRelink(err, bind) ? RELINK_MSG + '。' : `❌ 設定失敗：${err.message}`));
       }
-      return send(text(v > 0 ? `✅ ${label}已設為 $${fmt(v)}\n\n${await balanceText(env, bind, fetchImpl)}` : '✅ 已取消儲蓄目標'));
+    };
+    let pm;
+    if ((pm = msg.match(/^(?:新增口袋|建立口袋|增加口袋)\s*(.*)$/))) {
+      if (!pm[1].trim()) return send(text('請在後面加上口袋名稱，例如：新增口袋 旅遊基金'));
+      return pkOp((tk) => addPocket(tk, bind.sheetId, pm[1].trim(), {}, fetchImpl), (r) => `✅ 已新增口袋「${r.pocket.icon} ${r.pocket.name}」\n撥款試試看：撥款 ${r.pocket.name} 1000`);
+    }
+    if ((pm = msg.match(/^(?:口袋改名|改名口袋|口袋更名)\s*(\S*)\s*(?:改成|改為|→|->|=)?\s*(\S*)$/))) {
+      if (!pm[1] || !pm[2]) return send(text('請寫「口袋改名 舊名 新名」，例如：口袋改名 儲蓄 買房基金'));
+      return pkOp((tk) => renamePocket(tk, bind.sheetId, pm[1], pm[2], fetchImpl), (r) => `✅ 已把「${r.from}」改名為「${r.pocket.name}」\n帳本裡的舊紀錄也已一起更新。`);
+    }
+    if ((pm = msg.match(/^(?:刪除口袋|移除口袋)\s*(.*)$/))) {
+      if (!pm[1].trim()) return send(text('請寫要刪除的口袋，例如：刪除口袋 旅遊基金'));
+      try {
+        const token = await tokenFor(env, bind, fetchImpl);
+        const r = await previewDelete(token, bind.sheetId, pm[1].trim(), fetchImpl);
+        return send(deletePocketCard(r.pocket, r.balance));
+      } catch (err) {
+        if (err instanceof PocketError) return send(text(`⚠️ ${err.message}`));
+        console.error('pocket preview failed', err);
+        return send(text(needsRelink(err, bind) ? RELINK_MSG + '。' : `❌ 讀取帳本失敗：${err.message}`));
+      }
+    }
+    const tg = msg.replace(/[,，\s]/g, '').match(/^(.{1,14}?)目標(\d{0,10})$/);
+    if (tg) {
+      const act = (await getPockets(env, bind, fetchImpl)).filter(x => x.active !== false);
+      const pk = findPocket(act, tg[1]);
+      if (!pk) return send(text(`找不到「${tg[1]}」這個口袋。目前的口袋：${act.map(x => x.name).join('、') || '（沒有）'}`));
+      if (!tg[2]) return send(text(`請在後面加上金額，例如：${tg[1]}目標 100000\n（設 0 可取消目標）`));
+      const v = Number(tg[2]);
+      return pkOp((tk) => setPocketTarget(tk, bind.sheetId, pk.id, v, fetchImpl), (r) => (v > 0 ? `✅ ${r.pocket.name}的目標已設為 $${fmt(v)}` : `✅ 已取消${r.pocket.name}的目標`));
     }
     if (/^(說明|使用說明|教學|幫助|help|\?|？)$/i.test(msg)) return send([guideCard(ctxo.base), text(HELP)]);
     if (/^調整/.test(msg)) return send(text('「調整」類型要等網站改版後才開放，目前請在網站上操作。'));
@@ -175,6 +213,22 @@ export async function handleEvent(ev, env, deps = {}) {
     }
     if (entries.length > MAX_BATCH) return send(text(`一次最多 ${MAX_BATCH} 筆，請分開傳送。`));
 
+    // 撥款：依使用者自訂的口袋比對名稱
+    let pockets;
+    const notes = [];
+    const allocs = entries.filter(e => e.type === 'alloc');
+    if (allocs.length) {
+      pockets = (await getPockets(env, bind, fetchImpl)).filter(x => x.active !== false);
+      if (!pockets.length) return send(text('你目前沒有任何口袋。先傳「新增口袋 旅遊基金」建立一個，再撥款。'));
+      for (const e of allocs) {
+        const found = e.pocketText ? findPocket(pockets, e.pocketText) : null;
+        const pk = found || pockets.find(x => x.id === 'emergency') || pockets[0];
+        if (e.pocketText && !found) notes.push(`找不到「${e.pocketText}」這個口袋，先幫你選「${pk.name}」，可以按「改方向」換成其他口袋。`);
+        Object.assign(e, allocEntry(e.category === 'alloc_out' ? 'out' : 'in', pk.id, pockets));
+      }
+    }
+    for (const e of entries) delete e.pocketText;
+
     const now = Date.now();
     const pid = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
     const items = [];
@@ -184,15 +238,32 @@ export async function handleEvent(ev, env, deps = {}) {
       if (mem && mem.type && mem.category) { entry.type = mem.type; entry.category = mem.category; }
       items.push({ entry, txnId: `${now + i}${pid.slice(0, 4)}`, hadMemory: !!mem });
     }
-    await entryCall(env, pid, 'create', { uid, sheetId: bind.sheetId, ledger: ledgerRef(bind), ledgerName, items });
-    const card = cardFor(pid, items, ledgerName);
-    return send(bad.length ? [card, text(`以下 ${bad.length} 行看不懂，沒有放進卡片：\n${bad.map(b => '・' + b).join('\n')}`)] : card);
+    await entryCall(env, pid, 'create', { uid, sheetId: bind.sheetId, ledger: ledgerRef(bind), ledgerName, items, ...(pockets ? { pockets } : {}) });
+    const card = cardFor(pid, items, ledgerName, pockets);
+    const extra = [...notes.map(n => text(n)), ...(bad.length ? [text(`以下 ${bad.length} 行看不懂，沒有放進卡片：\n${bad.map(b => '・' + b).join('\n')}`)] : [])];
+    return send(extra.length ? [card, ...extra].slice(0, 5) : card);
   }
 
   if (ev.type === 'postback') {
     const p = new URLSearchParams(ev.postback?.data || '');
     const a = p.get('a'), pid = p.get('p');
     const i = Number(p.get('i')) || 0;
+    if (a === 'pkno') return send(text('好的，沒有刪除口袋。'));
+    if (a === 'pkdel') {                                   // 刪除口袋：使用者在確認卡片按下「同意刪除」
+      const k = p.get('k') || '', n = (p.get('n') || '').replace(/[^0-9a-z]/gi, '').slice(0, 16);
+      const cur = (await getPockets(env, bind, fetchImpl)).find(x => x.id === k);
+      if (!cur || cur.active === false) return send(text('這個口袋已經刪除了。'));
+      try {
+        const r = await pocketOp(env, bind, fetchImpl, (tk) => deletePocket(tk, bind.sheetId, k, { today, txnId: `pkdel${n}` }, fetchImpl));
+        const b = Math.round(r.balance);
+        const how = b > 0 ? `餘額 $${fmt(b)} 已自動撥回日常。` : b < 0 ? `已從日常補足 $${fmt(-b)}，讓口袋歸零。` : '口袋餘額為 0。';
+        return send(text(`🗑️ 已刪除口袋「${r.pocket.name}」\n${how}\n舊紀錄仍保留在帳本中。\n\n${await balanceText(env, bind, fetchImpl)}`));
+      } catch (err) {
+        if (err instanceof PocketError) return send(text(`⚠️ ${err.message}`));
+        console.error('pocket delete failed', err);
+        return send(text(needsRelink(err, bind) ? RELINK_MSG + '。' : `❌ 刪除失敗：${err.message}`));
+      }
+    }
     if (!pid || !/^[0-9a-f]{16}$/.test(pid)) return;
     if (a !== 'ok') {                                // 取消、改分類也只限卡片本人（確認寫入另有檢查）
       const own = await entryCall(env, pid, 'get');
@@ -217,7 +288,10 @@ export async function handleEvent(ev, env, deps = {}) {
       const it = r.rec.items[i];
       if (!it) return;
       const who = r.rec.items.length > 1 ? `第 ${i + 1} 筆「${it.entry.client}」` : '';
-      if (it.entry.type === 'alloc') return send(text(`${who}請選擇撥款方向：`, allocQuickReply(pid, i)));
+      if (it.entry.type === 'alloc') {
+        const pk = (r.rec.pockets || await getPockets(env, bind, fetchImpl)).filter(x => x.active !== false);
+        return send(text(`${who}請選擇撥款方向：`, allocQuickReply(pid, i, pk, p.get('o') || undefined)));
+      }
       return send(text(`${who}請選擇分類：`, categoryQuickReply(pid, it.entry.type, i)));
     }
 
@@ -227,20 +301,23 @@ export async function handleEvent(ev, env, deps = {}) {
       const cur = g.rec.items[i]?.entry;
       if (!cur) return;
       const origClient = cur.origClient || cur.client;
-      let patch;
+      let patch, pockets4card;
       if (a === 'cat') {
         patch = { category: p.get('c') };
       } else if (a === 'alloc') {
         const d = p.get('d') === 'out' ? 'out' : 'in';
-        const k = p.get('k') === 'savings' ? 'savings' : 'emergency';
-        patch = { ...allocEntry(d, k), origClient: cur.type === 'alloc' ? cur.origClient : cur.client };
+        const pk = (g.rec.pockets || await getPockets(env, bind, fetchImpl)).filter(x => x.active !== false);
+        if (!pk.length) return send(text('你目前沒有任何口袋。先傳「新增口袋 旅遊基金」建立一個。'));
+        const k = (pk.find(x => x.id === p.get('k')) || pk.find(x => x.id === 'emergency') || pk[0]).id;
+        patch = { ...allocEntry(d, k, pk), origClient: cur.type === 'alloc' ? cur.origClient : cur.client };
+        if (!g.rec.pockets) pockets4card = pk;
       } else {
         const t = p.get('t') === 'inflow' ? 'inflow' : 'outflow';
         patch = { type: t, client: origClient, account: '', category: guessCategory(origClient, t) };
       }
       const r = await entryCall(env, pid, 'update', { i, patch });
       if (!r.ok) return send(text(stateMsg(r.reason)));
-      return send(cardFor(pid, r.rec.items, r.rec.ledgerName));
+      return send(cardFor(pid, r.rec.items, r.rec.ledgerName, r.rec.pockets || pockets4card));
     }
   }
 }
@@ -261,9 +338,9 @@ export function parseMessage(msg, today) {
   return { entries, bad };
 }
 
-const cardFor = (pid, items, ledgerName) => (items.length > 1
-  ? batchCard(pid, items.map(it => it.entry), ledgerName)
-  : confirmCard(pid, items[0].entry, ledgerName));
+const cardFor = (pid, items, ledgerName, pockets) => (items.length > 1
+  ? batchCard(pid, items.map(it => it.entry), ledgerName, pockets)
+  : confirmCard(pid, items[0].entry, ledgerName, pockets));
 
 function stateMsg(reason) {
   switch (reason) {
@@ -284,7 +361,7 @@ async function confirmWrite(env, pid, uid, fetchImpl) {
   try {
     const token = await tokenFor(env, rec.ledger || { sheetId: rec.sheetId }, fetchImpl);
     await withSheetLock(env, rec.sheetId, async () => {
-    const { header, ids } = await readHeaderAndIds(token, rec.sheetId, fetchImpl);
+    const { header, ids, pockets } = await readHeaderAndIds(token, rec.sheetId, fetchImpl);
     const have = new Set(ids);
     const createdAt = new Date().toISOString();
     const txns = items.filter(it => !have.has(it.txnId)).map(({ entry: e, txnId }) => ({
@@ -292,7 +369,7 @@ async function confirmWrite(env, pid, uid, fetchImpl) {
       client: e.client, description: '', paymentTerm: 0, received: true,
       createdAt, account: e.account || '',
     }));
-    await appendTxns(token, rec.sheetId, header, txns, fetchImpl);
+    await appendTxns(token, rec.sheetId, header, txns, fetchImpl, pockets);
     });
   } catch (err) {
     await entryCall(env, pid, 'release');
@@ -316,7 +393,7 @@ async function confirmWrite(env, pid, uid, fetchImpl) {
   const line = (e) => {
     const sign = e.type === 'inflow' ? '+' : e.type === 'alloc' ? '' : '-';
     const label = e.type === 'alloc' ? '撥款' : e.client;
-    return { label, sign, cat: catLabel(e.type, e.category, e.account) };
+    return { label, sign, cat: catLabel(e.type, e.category, e.account, rec.pockets) };
   };
   let body;
   if (items.length === 1) {
@@ -365,22 +442,69 @@ async function clearLegacyCache(env, fetchImpl) {
 
 async function loadLedger(env, bind, fetchImpl) {
   const token = await tokenFor(env, bind, fetchImpl);
-  return readLedger(token, bind.sheetId, fetchImpl);
+  const d = await readLedger(token, bind.sheetId, fetchImpl);
+  await rememberPockets(env, bind.sheetId, d.pockets).catch(() => {});
+  return d;
+}
+
+/* ---------- 口袋：清單快取在 KV（撥款時不用每次讀帳本），來源以帳本「口袋」工作表為準 ---------- */
+const pkKey = (sheetId) => `pk:${sheetId}`;
+const lite = (pockets) => pockets.map(({ id, name, icon, active, target }) => ({ id, name, icon, active, target }));
+async function rememberPockets(env, sheetId, pockets) {
+  const v = JSON.stringify(lite(pockets || []));
+  if ((await env.KV.get(pkKey(sheetId))) !== v) await env.KV.put(pkKey(sheetId), v, { expirationTtl: 30 * 86400 });
+}
+async function getPockets(env, bind, fetchImpl) {
+  const c = await env.KV.get(pkKey(bind.sheetId), 'json');
+  if (Array.isArray(c)) return c;
+  return lite((await loadLedger(env, bind, fetchImpl)).pockets);
+}
+async function pocketOp(env, bind, fetchImpl, fn) {
+  const token = await tokenFor(env, bind, fetchImpl);
+  return withSheetLock(env, bind.sheetId, async () => {
+    const r = await fn(token);
+    if (r?.pockets) await rememberPockets(env, bind.sheetId, r.pockets);
+    return r;
+  });
+}
+const POCKET_QR = { items: [['新增口袋', '新增口袋'], ['餘額', '餘額'], ['說明', '說明']]
+  .map(([label, t]) => ({ type: 'action', action: { type: 'message', label, text: t } })) };
+
+function deletePocketCard(pk, balance) {
+  const b = Math.round(balance), n = Math.random().toString(36).slice(2, 10);
+  const how = b > 0 ? `按「同意刪除」後，會自動記一筆「${pk.name}撥回日常 $${fmt(b)}」，再把這個口袋歸零並刪除。`
+    : b < 0 ? `這個口袋超支 $${fmt(-b)}。按「同意刪除」後，會自動從日常補足 $${fmt(-b)}，讓口袋歸零並刪除。`
+    : '這個口袋目前沒有餘額，可以直接刪除。';
+  return bubble(`刪除口袋「${pk.name}」？`, '#A0421C', [
+    { type: 'text', text: `${pk.icon} ${pk.name}　目前餘額 $${fmt(b)}`, size: 'md', weight: 'bold', color: '#222222', wrap: true },
+    how,
+    note('舊紀錄會保留在帳本中，之後也可以再建立同名的口袋。'),
+  ], [pbBtn('同意刪除', `a=pkdel&k=${encodeURIComponent(pk.id)}&n=${n}`, true), pbBtn('取消', 'a=pkno')]);
 }
 
 async function balanceText(env, bind, fetchImpl) {
   try {
     const d = await loadLedger(env, bind, fetchImpl);
-    const p = computePockets(d.transactions, d.openingBalance);
+    const p = computePockets(d.transactions, d.openingBalance, d.pockets);
     const goal = (cur, target) => (target - cur > 0 ? `　還差 $${fmt(target - cur)}` : '　已達標 🎉');
     const lines = [
       `💰 帳戶總額 $${fmt(p.total)}`,
       `👛 日常口袋 $${fmt(p.daily)}${p.daily < 0 ? '（超支）' : ''}`,
     ];
-    if (d.savingsTarget > 0) lines.push(`🏦 儲蓄口袋 $${fmt(p.savings)} / $${fmt(d.savingsTarget)}`, goal(p.savings, d.savingsTarget));
-    else lines.push(`🏦 儲蓄口袋 $${fmt(p.savings)}${p.savings < 0 ? '（超支）' : ''}`);
-    lines.push(`🛟 緊急備用金 $${fmt(p.emergency)} / $${fmt(d.fundTarget)}`, goal(p.emergency, d.fundTarget));
-    if (!(d.savingsTarget > 0)) lines.push('', '💡 傳「儲蓄目標 100000」可設定儲蓄目標');
+    const act = d.pockets.filter(x => x.active);
+    for (const pk of act) {
+      const bal = p.byId[pk.id] || 0;
+      if (pk.target > 0) lines.push(`${pk.icon} ${pk.name} $${fmt(bal)} / $${fmt(pk.target)}`, goal(bal, pk.target));
+      else lines.push(`${pk.icon} ${pk.name} $${fmt(bal)}${bal < 0 ? '（超支）' : ''}`);
+    }
+    for (const [id, bal] of Object.entries(p.byId)) {               // 帳本裡手動寫的、認不得的口袋名稱
+      if (!d.pockets.some(x => x.id === id) && Math.round(bal) !== 0) lines.push(`👝 ${id} $${fmt(bal)}（不在口袋清單）`);
+    }
+    if (!act.length) lines.push('', '💡 目前沒有其他口袋，傳「新增口袋 旅遊基金」可以建立');
+    else {
+      const noTarget = act.find(x => !(x.target > 0));
+      if (noTarget) lines.push('', `💡 傳「${noTarget.name.replace(/口袋$/, '')}目標 100000」可設定目標`);
+    }
     return lines.join('\n');
   } catch (err) {
     console.error('balance failed', err);

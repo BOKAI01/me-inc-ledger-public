@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker, { handleEvent } from '../src/index.js';
-import { resetTokenCache } from '../src/google.js';
+import { resetTokenCache, resetSheetCaches } from '../src/google.js';
 import { fakeKV, fakeEntryNS, fakeWorld, makeServiceAccount, HEADER } from './helpers.js';
 
 const UID = 'U1234567890abcdef1234567890abcdef';
@@ -9,7 +9,7 @@ const T = '2026-10-06';
 const SA = await makeServiceAccount();
 
 function setup(worldOpts) {
-  resetTokenCache();
+  resetTokenCache(); resetSheetCaches();
   const world = fakeWorld(worldOpts);
   const env = {
     LINE_CHANNEL_SECRET: 'sec', LINE_CHANNEL_ACCESS_TOKEN: 'lt', GOOGLE_SA_JSON: SA,
@@ -236,12 +236,12 @@ test('儲蓄目標與緊急備用金目標：LINE 指令設定，餘額顯示進
   assert.match(s.world.lastText(), /儲蓄目標 100000/);                 // 提示可以設定
   await s.say('儲蓄目標 100,000');
   let t = s.world.lastText();
-  assert.match(t, /儲蓄目標已設為 \$100,000/);
+  assert.match(t, /儲蓄口袋的目標已設為 \$100,000/);
   assert.match(t, /儲蓄口袋 \$30,000 \/ \$100,000\n　還差 \$70,000/);
   await s.say('緊急目標 20000');
   assert.match(s.world.lastText(), /緊急備用金 \$0 \/ \$20,000/);
   await s.say('儲蓄目標 0');
-  assert.match(s.world.lastText(), /已取消儲蓄目標/);
+  assert.match(s.world.lastText(), /已取消儲蓄口袋的目標/);
   await s.say('儲蓄目標');
   assert.match(s.world.lastText(), /請在後面加上金額/);
 });

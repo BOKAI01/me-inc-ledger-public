@@ -10,6 +10,8 @@ import {
   readLedger, appendTxns, writeCells, deleteRow, txnCell, setSetting,
 } from './google.js';
 import { withSheetLock } from './entry.js';
+import { addPocket, renamePocket, setPocketTarget, deletePocket, PocketError } from './pocket-ops.js';
+import { taipeiToday } from './ledger.js';
 import { bearer, bindFromSession, legacyKeyAllowed, logoutAll, createSession, deleteSession } from './session.js';
 
 const DUP_WINDOW_MS = 60 * 1000;
@@ -98,7 +100,8 @@ async function runAction(p, bind, env, fetchImpl) {
   switch (p.action) {
     case 'load': {
       const d = await readLedger(token, sheetId, fetchImpl);
-      const out = { transactions: d.transactions, openingBalance: d.openingBalance, cycleDay: d.cycleDay, fundTarget: d.fundTarget, savingsTarget: d.savingsTarget };
+      const out = { transactions: d.transactions, openingBalance: d.openingBalance, cycleDay: d.cycleDay, fundTarget: d.fundTarget, savingsTarget: d.savingsTarget,
+        pockets: d.pockets.map(({ row, ...x }) => x) };
       for (const [k, v] of Object.entries(d.settings)) if (k.startsWith('openingBalance_')) out[k] = Number(v) || 0;
       return out;
     }
@@ -118,7 +121,7 @@ async function runAction(p, bind, env, fetchImpl) {
           amount: Number(t.amount) || 0, client: t.client || '', description: t.description || '',
           paymentTerm: Number(t.paymentTerm) || 0, received: t.received !== false,
           createdAt: t.createdAt || new Date().toISOString(), account: t.account || '',
-        }], fetchImpl);
+        }], fetchImpl, d.pockets);
         return { id: String(t.id) };
       });
     case 'updateTxn':
@@ -154,11 +157,31 @@ async function runAction(p, bind, env, fetchImpl) {
       if (k === 'cycleDay' && (v < 1 || v > 28)) throw new Error('結算日需介於 1–28');
       if (/Target$/.test(k) && v < 0) throw new Error('目標金額不能是負數');
       return withLock(env, sheetId, async () => {
+        if (k === 'fundTarget' || k === 'savingsTarget') {             // 目標金額現在存在「口袋」工作表
+          await setPocketTarget(token, sheetId, k === 'fundTarget' ? 'emergency' : 'savings', v, fetchImpl);
+          return { key: k, value: v };
+        }
         const d = await readLedger(token, sheetId, fetchImpl);
         await setSetting(token, sheetId, d, k, v, fetchImpl);
         return { key: k, value: v };
       });
     }
+    case 'addPocket':
+    case 'renamePocket':
+    case 'setPocketTarget':
+    case 'deletePocket':
+      return withLock(env, sheetId, async () => {
+        try {
+          if (p.action === 'addPocket') return (await addPocket(token, sheetId, p.name, { icon: p.icon, target: p.target }, fetchImpl)).pocket;
+          if (p.action === 'renamePocket') return (await renamePocket(token, sheetId, p.id, p.name, fetchImpl)).pocket;
+          if (p.action === 'setPocketTarget') return (await setPocketTarget(token, sheetId, p.id, p.target, fetchImpl)).pocket;
+          const r = await deletePocket(token, sheetId, p.id, { today: taipeiToday(), txnId: p.txnId }, fetchImpl);
+          return { id: r.pocket.id, balance: r.balance, wrote: r.wrote };
+        } catch (err) {
+          if (err instanceof PocketError) throw new Error(err.message);
+          throw err;
+        }
+      });
     default:
       throw new Error('不支援的 action：' + p.action);
   }

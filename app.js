@@ -31,27 +31,50 @@ const DEPARTMENTS = [
   { id: 'other_out', name: '其他', fullName: '其他 · 雜項部', emoji: '📂', color: '#888888', desc: '貸款、卡費、醫療、人情禮金、稅務' },
 ];
 
-/* 三個口袋：同一個帳戶內的資金分配，不是三個帳戶 */
-const POCKETS = [
-  { id: 'daily',     name: '日常口袋',   short: '日常', emoji: '👛', color: '#5B8C5A' },
-  { id: 'savings',   name: '儲蓄口袋',   short: '儲蓄', emoji: '🏦', color: '#A87B3D' },
-  { id: 'emergency', name: '緊急備用金', short: '緊急', emoji: '🛟', color: '#A0421C' },
+/* 口袋：同一個帳戶內的資金分配，不是多個帳戶。
+   日常固定存在；其他口袋由使用者自訂（最多 8 個），清單來自帳本的「口袋」工作表 */
+const MAX_POCKETS = 8;
+const DAILY = { id: 'daily', name: '日常口袋', short: '日常', emoji: '👛', color: '#5B8C5A', active: true };
+const DEFAULT_LIST = [
+  { id: 'savings',   name: '儲蓄口袋',   icon: '🏦', target: 0,     active: true },
+  { id: 'emergency', name: '緊急備用金', icon: '🛟', target: 50000, active: true },
 ];
-const RESERVES = POCKETS.filter(p => p.id !== 'daily');
-const findPocket = (id) => POCKETS.find(p => p.id === id) || POCKETS[0];
+const PALETTE = ['#A87B3D', '#A0421C', '#3E6A8A', '#7A5A9F', '#2F7D74', '#B5647A', '#6B7A2E', '#8A6A4F', '#4A5A8C', '#9C5B2E'];
+const PRESET_COLOR = { savings: '#A87B3D', emergency: '#A0421C' };
+let POCKETS = [], RESERVES = [], ALL_POCKETS = [];
+function setPocketList(list) {
+  const src = Array.isArray(list) ? list : DEFAULT_LIST;
+  let ci = 0;
+  ALL_POCKETS = [DAILY, ...src.map(p => {
+    const name = String(p.name || '');
+    const short = name.replace(/（已刪除.*）$/, '').replace(/口袋$/, '') || name;
+    const color = PRESET_COLOR[p.id] || PALETTE[(2 + ci++) % PALETTE.length];
+    return { id: p.id, name, short: short.length > 5 ? short.slice(0, 5) : short, emoji: p.icon || '👝', color, target: Math.max(0, Number(p.target) || 0), active: p.active !== false };
+  })];
+  POCKETS = ALL_POCKETS.filter(p => p.active);
+  RESERVES = POCKETS.filter(p => p.id !== 'daily');
+}
+setPocketList(DEFAULT_LIST);
+const findPocket = (id) => ALL_POCKETS.find(p => p.id === id)
+  || (id && id !== 'daily' ? { id, name: String(id), short: String(id).slice(0, 4), emoji: '👝', color: '#888888', active: false } : DAILY);
+const norm = (s) => String(s ?? '').replace(/[\s「」『』"'：:]/g, '').replace(/口袋$/, '').toLowerCase();
 
 /* 由品項名稱推斷口袋，供舊資料辨識 */
 function pocketByName(text) {
-  const s = String(text || '');
-  if (/儲蓄|存款/.test(s)) return 'savings';
-  if (/備用金|緊急|急用/.test(s)) return 'emergency';
+  const q = norm(text);
+  if (!q) return null;
+  const hit = RESERVES.filter(p => q.includes(norm(p.name)));
+  if (hit.length === 1) return hit[0].id;
+  if (/儲蓄|存款/.test(q) && RESERVES.some(p => p.id === 'savings')) return 'savings';
+  if (/備用金|緊急|急用/.test(q) && RESERVES.some(p => p.id === 'emergency')) return 'emergency';
   return null;
 }
 
-/* 撥款的口袋：口袋欄空白或填「日常」時（例如手動輸入），改由品項／備註判斷，最後才預設緊急備用金 */
+/* 撥款的口袋：口袋欄空白或填「日常」時（例如手動輸入），改由品項／備註判斷，最後才預設緊急備用金或第一個口袋 */
 function allocPocket(tx) {
-  if (tx.account === 'savings' || tx.account === 'emergency') return tx.account;
-  return pocketByName(tx.client) || pocketByName(tx.description) || 'emergency';
+  if (tx.account && tx.account !== 'daily') return tx.account;
+  return pocketByName(tx.client) || pocketByName(tx.description)
+    || (RESERVES.some(p => p.id === 'emergency') ? 'emergency' : (RESERVES[0]?.id || 'emergency'));
 }
 
 /**
@@ -70,6 +93,8 @@ function classify(tx) {
   }
   return { kind: 'flow', pocket: tx.account && tx.account !== '' ? tx.account : 'daily' };
 }
+
+const defaultReserve = () => (RESERVES.find(p => p.id === 'emergency') || RESERVES[0] || { id: 'emergency' }).id;
 
 const findDept   = (id) => DEPARTMENTS.find(d => d.id === id) || DEPARTMENTS[5];
 const findIncome = (id) => INCOME_CATS.find(c => c.id === id) || INCOME_CATS[4];
@@ -449,20 +474,21 @@ function EntryForm({ initial, onClose, onSave, onDelete }) {
     setKind(k);
     if (k === 'outflow') setCategory('food');
     if (k === 'inflow') setCategory('salary');
-    if (k === 'alloc' && pocket === 'daily') setPocket('emergency');
+    if (k === 'alloc' && pocket === 'daily') setPocket(defaultReserve());
   };
 
   const submit = () => {
     if (busyRef.current) return;
     const amt = parseFloat(amount);
     if (!amount || isNaN(amt)) { alert('請填寫金額'); return; }
+    if (kind === 'alloc' && !reserveOpts.length) { alert('目前沒有其他口袋，請先到「設定 → 口袋管理」新增'); return; }
     if (amt < 0) { alert('金額請填正數，方向以上方按鈕選擇'); return; }
     busyRef.current = true; setBusy(true);
     if (kind === 'alloc') {
       onSave({
         type: 'alloc',
         category: dir === 'in' ? 'alloc_in' : 'alloc_out',
-        account: pocket === 'daily' ? 'emergency' : pocket,
+        account: pocket === 'daily' ? defaultReserve() : pocket,
         date, amount: amt, client: client.trim(), description: description.trim(),
       });
     } else {
@@ -474,6 +500,10 @@ function EntryForm({ initial, onClose, onSave, onDelete }) {
   };
 
   const cats = kind === 'inflow' ? INCOME_CATS : DEPARTMENTS;
+  /* 編輯舊紀錄時，原本的口袋即使已刪除也要能看到 */
+  const cur = findPocket(pocket);
+  const reserveOpts = cur.id !== 'daily' && !cur.active ? [...RESERVES, cur] : RESERVES;
+  const pocketOpts = cur.id !== 'daily' && !cur.active ? [...POCKETS, cur] : POCKETS;
   const segs = [
     { k: 'outflow', l: '支出', bg: '#A0421C' },
     { k: 'inflow',  l: '收入', bg: '#1F3A2E' },
@@ -513,7 +543,8 @@ function EntryForm({ initial, onClose, onSave, onDelete }) {
             <div>
               <div class="lbl" style="margin-bottom:8px">口袋</div>
               <div class="g2" style="gap:8px">
-                ${RESERVES.map(pk => html`
+                ${!reserveOpts.length && html`<div class="mini">目前沒有其他口袋，請先到「設定 → 口袋管理」新增</div>`}
+                ${reserveOpts.map(pk => html`
                   <button key=${pk.id} class=${'opt' + (pocket === pk.id ? ' on' : '')}
                     style=${pocket === pk.id ? { background: pk.color } : {}} onClick=${() => setPocket(pk.id)}>
                     <div class="em">${pk.emoji}</div><div class="nm">${pk.name}</div>
@@ -535,7 +566,7 @@ function EntryForm({ initial, onClose, onSave, onDelete }) {
             <div>
               <div class="lbl" style="margin-bottom:8px">${kind === 'inflow' ? '進入哪個口袋' : '從哪個口袋支付'}</div>
               <div class="g3">
-                ${POCKETS.map(pk => html`
+                ${pocketOpts.map(pk => html`
                   <button key=${pk.id} class=${'opt' + (pocket === pk.id ? ' on' : '')}
                     style=${pocket === pk.id ? { background: pk.color } : {}} onClick=${() => setPocket(pk.id)}>
                     <div class="em">${pk.emoji}</div><div class="nm">${pk.short}</div>
@@ -656,13 +687,104 @@ function DuplicateSheet({ groups, loading, onClose, onDelete, onRescan }) {
 }
 
 /* ============================================================
+   口袋管理：新增、改名、目標、刪除（刪除前顯示餘額並請使用者同意）
+   ============================================================ */
+function PocketManager({ balances, onAdd, onRename, onTarget, onDelete }) {
+  const [edit, setEdit] = useState(null);          // { id, mode: 'name' | 'target', value }
+  const [newName, setNewName] = useState('');
+  const [busy, setBusy] = useState('');
+  const [askDel, setAskDel] = useState(null);      // 要刪除的口袋
+  const full = RESERVES.length >= MAX_POCKETS;
+
+  const run = async (tag, fn) => {
+    if (busy) return;
+    setBusy(tag);
+    try { await fn(); return true; } catch (e) { alert(e.message || '操作失敗'); return false; } finally { setBusy(''); }
+  };
+  const save = () => run('edit', async () => {
+    if (edit.mode === 'name') await onRename(edit.id, edit.value.trim());
+    else await onTarget(edit.id, Math.max(0, Math.round(parseFloat(edit.value) || 0)));
+    setEdit(null);
+  });
+  const add = () => run('add', async () => { await onAdd(newName.trim()); setNewName(''); });
+  const del = () => run('del', async () => { await onDelete(askDel.id); setAskDel(null); });
+
+  const smallBtn = 'padding:5px 9px;font-size:12px;flex:0 0 auto';
+  return html`
+    <div class="box box-w">
+      <div class="between" style="margin-bottom:6px">
+        <span style="font-size:14px;font-weight:700;color:var(--ink-2)">👝 口袋管理</span>
+        <span class="sub">${RESERVES.length} / ${MAX_POCKETS}</span>
+      </div>
+      <p class="note" style="margin:0 0 10px;color:var(--ink-2)">
+        口袋是同一個帳戶裡的「子帳戶」，可以自由命名、設定目標。改名時過去的紀錄會一起更新。
+      </p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div class="between" style="padding:8px 10px;background:#FAFAF8;border-radius:3px">
+          <span style="font-size:14px">${DAILY.emoji} ${DAILY.name}</span>
+          <span class="mono sub">$${fmt(balances.daily)} · 預設</span>
+        </div>
+        ${RESERVES.map(pk => {
+          const bal = balances.byId[pk.id] || 0;
+          const editing = edit && edit.id === pk.id;
+          return html`
+            <div key=${pk.id} class="pkrow" style="padding:8px 10px;background:#FAFAF8;border-radius:3px">
+              <div class="between">
+                <span style=${{ fontSize: '14px', fontWeight: 500, color: pk.color }}>${pk.emoji} ${pk.name}</span>
+                <span class="mono sub">$${fmt(bal)}${pk.target > 0 ? ` / $${fmt(pk.target)}` : ''}</span>
+              </div>
+              ${editing ? html`
+                <div class="row" style="gap:6px;margin-top:8px">
+                  <input class=${'inp' + (edit.mode === 'target' ? ' mono' : '')} style="padding:8px;flex:1;min-width:0"
+                    type=${edit.mode === 'target' ? 'number' : 'text'} inputmode=${edit.mode === 'target' ? 'numeric' : 'text'}
+                    maxlength="12" value=${edit.value} placeholder=${edit.mode === 'target' ? '0 代表不設目標' : '新名稱'}
+                    onInput=${e => setEdit({ ...edit, value: e.target.value })} />
+                  <button class="btn btn-p" style=${smallBtn} disabled=${!!busy} onClick=${save}>${busy === 'edit' ? '⋯' : '儲存'}</button>
+                  <button class="btn btn-g" style=${smallBtn} onClick=${() => setEdit(null)}>取消</button>
+                </div>` : html`
+                <div class="row" style="gap:6px;margin-top:6px">
+                  <button class="btn btn-g" style=${smallBtn} onClick=${() => setEdit({ id: pk.id, mode: 'name', value: pk.name })}>改名</button>
+                  <button class="btn btn-g" style=${smallBtn} onClick=${() => setEdit({ id: pk.id, mode: 'target', value: String(pk.target || '') })}>${pk.target > 0 ? '改目標' : '設目標'}</button>
+                  <button class="btn btn-d" style=${smallBtn} onClick=${() => setAskDel({ ...pk, balance: bal })}>刪除</button>
+                </div>`}
+            </div>`;
+        })}
+      </div>
+      ${full
+        ? html`<div class="mini" style="margin-top:10px">口袋最多 ${MAX_POCKETS} 個，要新增請先刪除不用的口袋</div>`
+        : html`<div class="row" style="gap:6px;margin-top:10px">
+            <input class="inp" style="padding:8px;flex:1;min-width:0" type="text" maxlength="12" placeholder="新口袋名稱，例：旅遊基金"
+              value=${newName} onInput=${e => setNewName(e.target.value)} />
+            <button class="btn btn-p" style="flex:0 0 auto" disabled=${!!busy || !newName.trim()} onClick=${add}>${busy === 'add' ? '新增中⋯' : '新增'}</button>
+          </div>`}
+      <div class="mini">也可以在 LINE 傳「口袋」查看與管理</div>
+    </div>
+
+    ${askDel && html`
+      <div class="mask" style="z-index:60;align-items:center" onClick=${() => !busy && setAskDel(null)}>
+        <div class="box" style="background:#fff;max-width:340px;margin:0 16px;padding:18px" onClick=${e => e.stopPropagation()}>
+          <div style="font-size:16px;font-weight:700;color:#991B1B;margin-bottom:8px">刪除口袋「${askDel.name}」？</div>
+          <div class="note" style="margin:0 0 6px;color:var(--ink-2)">目前餘額 <strong class="mono">$${fmt(askDel.balance)}</strong></div>
+          <div class="note" style="margin:0 0 14px;color:var(--ink-2)">
+            ${Math.round(askDel.balance) > 0
+              ? html`刪除後會自動記一筆「${askDel.name}撥回日常 $${fmt(askDel.balance)}」，這個口袋歸零並刪除。`
+              : Math.round(askDel.balance) < 0
+                ? html`這個口袋目前超支，刪除後會自動記一筆「日常補足${askDel.name} $${fmt(-askDel.balance)}」，這個口袋歸零並刪除。`
+                : html`這個口袋沒有餘額，會直接刪除。`}
+            過去的紀錄會保留，報表照常顯示。
+          </div>
+          <div class="row" style="gap:8px">
+            <button class="btn btn-g" style="flex:1" disabled=${!!busy} onClick=${() => setAskDel(null)}>取消</button>
+            <button class="btn" style="flex:1;background:#B91C1C;color:#fff" disabled=${!!busy} onClick=${del}>${busy === 'del' ? '刪除中⋯' : '同意刪除'}</button>
+          </div>
+        </div>
+      </div>`}`;
+}
+
+/* ============================================================
    設定
    ============================================================ */
-function SettingsSheet({ userName, onLogout, onLogoutAll, openingBalance, currentBalance, cycleDay, fundTarget, savingsTarget, onChangeSavingsTarget, onChangeTarget, onChangeCycle, onClose, onSaveOpening, onDedupe }) {
-  const [tgt, setTgt] = useState(String(fundTarget));
-  const [tgtDirty, setTgtDirty] = useState(false);
-  const [sTgt, setSTgt] = useState(String(savingsTarget || 0));
-  const [sTgtDirty, setSTgtDirty] = useState(false);
+function SettingsSheet({ userName, onLogout, onLogoutAll, openingBalance, currentBalance, cycleDay, balances, onAddPocket, onRenamePocket, onPocketTarget, onDeletePocket, onChangeCycle, onClose, onSaveOpening, onDedupe }) {
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState(String(openingBalance));
   const [tmp, setTmp] = useState(cycleDay);
@@ -712,27 +834,8 @@ function SettingsSheet({ userName, onLogout, onLogoutAll, openingBalance, curren
             <div class="mini">只在首次設定，之後系統自動延續</div>
           </div>
 
-          <div>
-            <div class="lbl" style="margin-bottom:6px">緊急備用金目標</div>
-            <div class="row" style="gap:8px">
-              <input class="inp mono" type="number" inputmode="decimal" value=${tgt}
-                     onInput=${e => { setTgt(e.target.value); setTgtDirty(true); }} />
-              ${tgtDirty && html`<button class="btn btn-p" style="flex:0 0 auto"
-                onClick=${() => { onChangeTarget(parseFloat(tgt) || 0); setTgtDirty(false); }}>儲存</button>`}
-            </div>
-            <div class="mini">口袋卡片的進度條依此計算</div>
-          </div>
-
-          <div>
-            <div class="lbl" style="margin-bottom:6px">儲蓄目標</div>
-            <div class="row" style="gap:8px">
-              <input class="inp mono" type="number" inputmode="decimal" value=${sTgt}
-                     onInput=${e => { setSTgt(e.target.value); setSTgtDirty(true); }} />
-              ${sTgtDirty && html`<button class="btn btn-p" style="flex:0 0 auto"
-                onClick=${() => { onChangeSavingsTarget(Math.max(0, parseFloat(sTgt) || 0)); setSTgtDirty(false); }}>儲存</button>`}
-            </div>
-            <div class="mini">填 0 代表不設目標；也可以在 LINE 傳「儲蓄目標 100000」</div>
-          </div>
+          <${PocketManager} balances=${balances} onAdd=${onAddPocket} onRename=${onRenamePocket}
+            onTarget=${onPocketTarget} onDelete=${onDeletePocket} />
 
           <div>
             <div class="lbl" style="margin-bottom:6px">目前公司現金</div>
@@ -784,8 +887,13 @@ function App() {
 
   const [transactions, setTransactions] = useState(() => (cached?.transactions) || []);
   const [openingBalance, setOpeningBalance] = useState(() => cached?.openingBalance || 0);
-  const [fundTarget, setFundTarget] = useState(() => Number(cached?.fundTarget) || 50000);
-  const [savingsTarget, setSavingsTarget] = useState(() => Number(cached?.savingsTarget) || 0);
+  const [pocketList, setPocketListState] = useState(() => {
+    const l = Array.isArray(cached?.pockets) ? cached.pockets : DEFAULT_LIST.map(p => ({ ...p,
+      target: p.id === 'emergency' ? (Number(cached?.fundTarget) || 50000) : p.id === 'savings' ? (Number(cached?.savingsTarget) || 0) : p.target }));
+    setPocketList(l);
+    return l;
+  });
+  const applyPockets = useCallback((l) => { setPocketList(l); setPocketListState(l); }, []);
   const [syncedAt, setSyncedAt] = useState(() => cached?.syncedAt || null);
   const [cycleDay, setCycleDay] = useState(() => Number(cached?.cycleDay || localStorage.getItem(K_CYCLE)) || 1);
   const [hasData, setHasData] = useState(() => !!cached);   // 是否已有可顯示的資料
@@ -834,14 +942,15 @@ function App() {
         const txns = (data.transactions || []).map(t => ({ ...t, date: String(t.date || '').slice(0, 10) }));
         setTransactions(txns);
         setOpeningBalance(Number(data.openingBalance) || 0);
-        setFundTarget(Number(data.fundTarget) || 50000);
-        setSavingsTarget(Math.max(0, Number(data.savingsTarget) || 0));
+        const pl = Array.isArray(data.pockets) ? data.pockets : DEFAULT_LIST.map(p => ({ ...p,
+          target: p.id === 'emergency' ? (Number(data.fundTarget) || 50000) : Math.max(0, Number(data.savingsTarget) || 0) }));
+        applyPockets(pl);
         const cd = Number(data.cycleDay) || 1;
         setCycleDay(cd);
         localStorage.setItem(K_CYCLE, String(cd));
         const now = Date.now();
         setSyncedAt(now);
-        localStorage.setItem(K_CACHE, JSON.stringify({ transactions: txns, openingBalance: data.openingBalance, cycleDay: cd, fundTarget: data.fundTarget, savingsTarget: data.savingsTarget, syncedAt: now }));
+        localStorage.setItem(K_CACHE, JSON.stringify({ transactions: txns, openingBalance: data.openingBalance, cycleDay: cd, pockets: pl, syncedAt: now }));
         setHasData(true); setLoadState('ok');
       } catch (e) {
         setLoadState('error');
@@ -850,7 +959,7 @@ function App() {
       }
     })();
     return loadingRef.current;
-  }, [sess, showToast]);
+  }, [sess, showToast, applyPockets]);
 
   useEffect(() => { if (sess) reload(); }, [sess, reload]);
 
@@ -892,10 +1001,11 @@ function App() {
   }, [transactions, period, cycleDay, openingBalance]);
   const periodEndCash = periodStartCash + netProfit;
 
-  /* 口袋餘額：儲蓄與緊急為累計配置減去由該口袋支付者，日常為總額減去兩者 */
+  /* 口袋餘額：各口袋為累計配置減去由該口袋支付者，日常為總額減去所有口袋 */
   const pockets = useMemo(() => {
-    let total = openingBalance, savings = 0, emergency = 0;
-    const bump = (id, v) => { if (id === 'savings') savings += v; else if (id === 'emergency') emergency += v; };
+    let total = openingBalance;
+    const byId = {};
+    const bump = (id, v) => { byId[id] = (byId[id] || 0) + v; };
     for (const t of transactions) {
       const c = classify(t);
       const amt = Number(t.amount || 0);
@@ -903,13 +1013,15 @@ function App() {
       total += (t.type === 'inflow' ? 1 : -1) * amt;
       if (c.pocket !== 'daily') bump(c.pocket, (t.type === 'inflow' ? 1 : -1) * amt);
     }
-    return { total, savings, emergency, daily: total - savings - emergency };
-  }, [transactions, openingBalance]);
+    const reserved = Object.values(byId).reduce((a, v) => a + v, 0);
+    return { total, byId, daily: total - reserved };
+  }, [transactions, openingBalance, pocketList]);
   const currentBalance = pockets.total;
 
   /* 本期各口袋的變動 */
   const pocketMoves = useMemo(() => {
-    const m = { savings: { in: 0, spend: 0 }, emergency: { in: 0, spend: 0 } };
+    const m = {};
+    for (const p of RESERVES) m[p.id] = { in: 0, spend: 0 };
     for (const t of periodTx) {
       const c = classify(t);
       const amt = Number(t.amount || 0);
@@ -917,7 +1029,7 @@ function App() {
       if (c.kind === 'flow' && m[c.pocket] && t.type === 'outflow') m[c.pocket].spend += amt;
     }
     return m;
-  }, [periodTx]);
+  }, [periodTx, pocketList]);
 
   const deptStats = useMemo(() => DEPARTMENTS.map(d => {
     const txs = periodFlows.filter(t => t.type === 'outflow' && t.category === d.id);
@@ -963,12 +1075,12 @@ function App() {
     const c = classify(t);
     if (filter === 'all') return true;
     if (filter === 'alloc') return c.kind === 'alloc';
-    if (filter === 'savings' || filter === 'emergency') return c.pocket === filter;
+    if (filter.startsWith('pk:')) return c.pocket === filter.slice(3);
     if (c.kind === 'alloc') return false;
     if (filter === 'income') return t.type === 'inflow';
     if (filter === 'expense') return t.type === 'outflow';
     return t.type === 'outflow' && t.category === filter;
-  }).sort((a, b) => String(b.date).localeCompare(String(a.date))), [periodTx, filter]);
+  }).sort((a, b) => String(b.date).localeCompare(String(a.date))), [periodTx, filter, pocketList]);
 
   /* ---- 動作 ---- */
   const handleSave = async (data) => {
@@ -1046,18 +1158,20 @@ function App() {
     catch (e) { setCycleDay(prev); showToast('儲存失敗：' + e.message, 'error'); }
   };
 
-  const changeTarget = async (v) => {
-    const prev = fundTarget;
-    setFundTarget(v);
-    try { await api('setSetting', { key: 'fundTarget', value: v }); showToast('目標已更新'); }
-    catch (e) { setFundTarget(prev); showToast('儲存失敗：' + e.message, 'error'); }
+  /* 口袋管理：成功後重新讀取，讓餘額、紀錄名稱都與試算表一致 */
+  const pocketCall = async (action, payload, okMsg) => {
+    if (!isOnline()) throw new Error('目前離線，口袋設定需要連線才能修改');
+    setSyncing(true);
+    try { await api(action, payload); showToast(okMsg); }
+    finally { setSyncing(false); }
+    await reload();
   };
-
-  const changeSavingsTarget = async (v) => {
-    const prev = savingsTarget;
-    setSavingsTarget(v);
-    try { await api('setSetting', { key: 'savingsTarget', value: v }); showToast(v > 0 ? '儲蓄目標已更新' : '已取消儲蓄目標'); }
-    catch (e) { setSavingsTarget(prev); showToast('儲存失敗：' + e.message, 'error'); }
+  const addPocket = (name) => pocketCall('addPocket', { name }, `已新增口袋「${name}」`);
+  const renamePocket = (id, name) => pocketCall('renamePocket', { id, name }, `已改名為「${name}」`);
+  const setPocketTarget = (id, target) => pocketCall('setPocketTarget', { id, target }, target > 0 ? '目標已更新' : '已取消目標');
+  const deletePocket = (id) => {
+    const name = findPocket(id).name;
+    return pocketCall('deletePocket', { id, txnId: `pkdelw${Date.now().toString(36)}` }, `已刪除口袋「${name}」`);
   };
 
   const saveOpening = async (v) => {
@@ -1182,9 +1296,10 @@ function App() {
           </div>
           <div class="card-bd" style="display:flex;flex-direction:column;gap:14px">
             ${POCKETS.map(pk => {
-              const bal = pockets[pk.id];
+              const bal = pk.id === 'daily' ? pockets.daily : (pockets.byId[pk.id] || 0);
               const mv = pocketMoves[pk.id];
               const pct = pockets.total > 0 ? Math.max(0, (bal / pockets.total) * 100) : 0;
+              const tp = pk.target > 0 ? Math.min(100, Math.max(0, (bal / pk.target) * 100)) : 0;
               return html`
                 <div key=${pk.id}>
                   <div class="between" style="margin-bottom:4px">
@@ -1198,26 +1313,16 @@ function App() {
                   <div class="bar"><i style=${{ width: Math.min(100, pct) + '%', background: pk.color }}></i></div>
                   ${mv && (mv.in !== 0 || mv.spend !== 0) && html`
                     <div class="mini">本期 ${mv.in !== 0 ? `撥${mv.in > 0 ? '入' : '回'} $${fmt(Math.abs(mv.in))}` : ''}${mv.in !== 0 && mv.spend !== 0 ? '、' : ''}${mv.spend !== 0 ? `動用 $${fmt(mv.spend)}` : ''}</div>`}
+                  ${pk.target > 0 && html`
+                    <div class="between" style="margin-top:6px">
+                      <span class="mini" style="margin:0">🎯 目標 $${fmt(pk.target)}</span>
+                      <span class="mini" style="margin:0">${bal >= pk.target ? '已達標 🎉' : `還差 $${fmt(pk.target - bal)}`}</span>
+                    </div>
+                    <div class="bar" style="height:4px"><i style=${{ width: tp + '%', background: pk.color, opacity: 0.55 }}></i></div>`}
                 </div>`;
             })}
-            ${savingsTarget > 0 && html`
-              <div class="divider-t">
-                <div class="between" style="margin-bottom:4px">
-                  <span class="lbl">儲蓄目標</span>
-                  <span class="mono sub">$${fmt(pockets.savings)} / $${fmt(savingsTarget)}</span>
-                </div>
-                <div class="bar"><i style=${{ width: Math.min(100, Math.max(0, (pockets.savings / savingsTarget) * 100)) + '%', background: '#A87B3D' }}></i></div>
-                <div class="mini">${pockets.savings >= savingsTarget ? '已達標 🎉' : `還差 $${fmt(savingsTarget - pockets.savings)}`}</div>
-              </div>`}
-            ${fundTarget > 0 && html`
-              <div class="divider-t">
-                <div class="between" style="margin-bottom:4px">
-                  <span class="lbl">緊急備用金目標</span>
-                  <span class="mono sub">$${fmt(pockets.emergency)} / $${fmt(fundTarget)}</span>
-                </div>
-                <div class="bar"><i style=${{ width: Math.min(100, Math.max(0, (pockets.emergency / fundTarget) * 100)) + '%', background: '#A0421C' }}></i></div>
-                <div class="mini">${pockets.emergency >= fundTarget ? '已達標 🎉' : `還差 $${fmt(fundTarget - pockets.emergency)}`}</div>
-              </div>`}
+            ${!RESERVES.length && html`<div class="mini">目前只有日常口袋。到「設定 → 口袋管理」可以新增儲蓄、旅遊等口袋。</div>`}
+            <button class="btn btn-g" style="padding:8px;font-size:13px" onClick=${() => setShowSettings(true)}>👝 管理口袋</button>
           </div>
         </section>
 
@@ -1267,7 +1372,7 @@ function App() {
         <section class="chips">
           ${[{ k: 'all', l: '全部' }, { k: 'income', l: '收入' }, { k: 'expense', l: '支出' },
              { k: 'alloc', l: '🔁 撥款' },
-             ...RESERVES.map(p => ({ k: p.id, l: p.emoji + ' ' + p.short })),
+             ...RESERVES.map(p => ({ k: 'pk:' + p.id, l: p.emoji + ' ' + p.short })),
              ...DEPARTMENTS.map(d => ({ k: d.id, l: d.emoji + ' ' + d.name }))].map(f => html`
             <button key=${f.k} class=${'chip' + (filter === f.k ? ' on' : '')} onClick=${() => setFilter(f.k)}>${f.l}</button>`)}
         </section>
@@ -1331,8 +1436,8 @@ function App() {
         onDelete=${deleteDuplicate} onRescan=${scanDuplicates} onClose=${() => setShowDup(false)} />`}
 
       ${showSettings && html`<${SettingsSheet} userName=${localStorage.getItem(K_NAME) || ''} onLogout=${() => logout(false)} onLogoutAll=${() => { if (confirm('確定要登出所有裝置嗎？每台裝置都需要重新用 LINE 登入。')) logout(true); }} openingBalance=${openingBalance}
-        currentBalance=${currentBalance} cycleDay=${cycleDay} fundTarget=${fundTarget} savingsTarget=${savingsTarget}
-        onChangeTarget=${changeTarget} onChangeSavingsTarget=${changeSavingsTarget} onChangeCycle=${changeCycle} onSaveOpening=${saveOpening} onDedupe=${scanDuplicates}
+        currentBalance=${currentBalance} cycleDay=${cycleDay} balances=${pockets}
+        onAddPocket=${addPocket} onRenamePocket=${renamePocket} onPocketTarget=${setPocketTarget} onDeletePocket=${deletePocket} onChangeCycle=${changeCycle} onSaveOpening=${saveOpening} onDedupe=${scanDuplicates}
         onClose=${() => setShowSettings(false)}
         />`}
     </div>`;

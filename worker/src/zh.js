@@ -46,7 +46,9 @@ const CAT_R = reverse(CAT, {
   ...Object.fromEntries(DEPARTMENTS.map(d => [d.name, d.id])),          // 「食」「衣」…
   餐飲: 'food', 交通: 'transport', 居家: 'housing', 娛樂: 'leisure', 其他支出: 'other_out', 薪資: 'salary',
 });
-const ACC_R = { ...reverse({ savings: '儲蓄口袋', emergency: '緊急備用金' }, { 儲蓄: 'savings', 緊急: 'emergency' }), 日常: '', daily: '', '': '' };
+/* 口袋欄：只認「日常」與舊英文代號；其他名稱原樣交給 pockets.accountFromSheet 依「口袋」工作表對應
+   （口袋可以改名、刪掉後再用同名新增，不能在這裡把「儲蓄口袋」寫死成 savings） */
+const ACC_R = { savings: 'savings', emergency: 'emergency', 日常: '', 日常口袋: '', daily: '', '': '' };
 
 /** 內部值 → 試算表顯示值 */
 export function toSheet(key, v) {
@@ -65,7 +67,7 @@ export function fromSheet(key, v) {
   switch (key) {
     case 'type': return TYPE_R[squash(v)] ?? v;
     case 'category': return CAT_R[squash(v)] ?? v;
-    case 'account': { const k = squash(v); return k in ACC_R ? ACC_R[k] : String(v); }
+    case 'account': { const k = squash(v); return k in ACC_R ? ACC_R[k] : String(v ?? '').trim(); }
     case 'received': return v === true || String(v).toUpperCase() === 'TRUE' || squash(v) === '是';
     default: return v;
   }

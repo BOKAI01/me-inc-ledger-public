@@ -19,35 +19,43 @@ export const DEPARTMENTS = [
 
 export const findDept = (id) => DEPARTMENTS.find(d => d.id === id) || DEPARTMENTS[5];
 export const findIncome = (id) => INCOME_CATS.find(c => c.id === id) || INCOME_CATS[4];
-export const allocLabel = (category, account) => {
-  const p = account === 'savings' ? '🏦 儲蓄口袋' : '🛟 緊急備用金';
+import { DEFAULT_POCKETS, pocketById, findPocket } from './pockets.js';
+
+/** 撥款方向的文字，例如「👛 日常 → ✈️ 旅遊基金」。pockets 省略時用預設的兩個口袋 */
+export const allocLabel = (category, account, pockets = DEFAULT_POCKETS) => {
+  const pk = pocketById(pockets, account) || pocketById(DEFAULT_POCKETS, account) || { icon: '👝', name: account || '口袋' };
+  const p = `${pk.icon} ${pk.name}`;
   return category === 'alloc_out' ? `${p} → 👛 日常` : `👛 日常 → ${p}`;
 };
-export const catLabel = (type, cat, account) => {
-  if (type === 'alloc') return allocLabel(cat, account);
+export const catLabel = (type, cat, account, pockets) => {
+  if (type === 'alloc') return allocLabel(cat, account, pockets);
   const c = type === 'inflow' ? findIncome(cat) : findDept(cat);
   return `${c.emoji} ${type === 'inflow' ? c.name : c.fullName}`;
 };
 
-function pocketByName(text) {
+/* 舊資料相容：只認原本兩個口袋的說法 */
+function legacyPocketByName(text) {
   const s = String(text || '');
   if (/儲蓄|存款/.test(s)) return 'savings';
   if (/備用金|緊急|急用/.test(s)) return 'emergency';
   return null;
 }
 
-/* 撥款的口袋：口袋欄空白或填「日常」時（例如手動輸入），改由品項／備註判斷，最後才預設緊急備用金 */
-function allocPocket(tx) {
-  if (tx.account === 'savings' || tx.account === 'emergency') return tx.account;
-  return pocketByName(tx.client) || pocketByName(tx.description) || 'emergency';
+/* 撥款的口袋：口袋欄是已知口袋就用它；空白或「日常」時（例如手動輸入）改由品項／備註判斷 */
+function allocPocket(tx, pockets) {
+  const acc = tx.account;
+  if (acc && acc !== 'daily') return acc;                    // 已知口袋；認不得的名稱也當作一個口袋，錢不會不見
+  const guess = (t) => (pockets ? findPocket(pockets, t, { includeDeleted: true })?.id : null) || legacyPocketByName(t);
+  const fallback = !pockets || pocketById(pockets, 'emergency') ? 'emergency' : (pockets.find(p => p.active)?.id || 'emergency');
+  return guess(tx.client) || guess(tx.description) || fallback;
 }
 
-export function classify(tx) {
+export function classify(tx, pockets) {
   if (tx.type === 'alloc') {
-    return { kind: 'alloc', dir: tx.category === 'alloc_out' ? 'out' : 'in', pocket: allocPocket(tx) };
+    return { kind: 'alloc', dir: tx.category === 'alloc_out' ? 'out' : 'in', pocket: allocPocket(tx, pockets) };
   }
   if (tx.type === 'outflow' && tx.category === 'other_out' && (!tx.account || tx.account === 'daily')) {
-    const p = pocketByName(tx.client);
+    const p = legacyPocketByName(tx.client);
     if (p) return { kind: 'alloc', dir: 'in', pocket: p, legacy: true };
   }
   return { kind: 'flow', pocket: tx.account && tx.account !== '' ? tx.account : 'daily' };
@@ -93,27 +101,30 @@ export function periodLabelFull(key, cycleDay) {
 const dateOf = (t) => String(t.date || '').slice(0, 10);
 const amt = (t) => Number(t.amount || 0);
 
-/** 帳戶總額與三個口袋（同網站 pockets） */
-export function computePockets(transactions, openingBalance) {
-  let total = Number(openingBalance) || 0, savings = 0, emergency = 0;
-  const bump = (id, v) => { if (id === 'savings') savings += v; else if (id === 'emergency') emergency += v; };
+/** 帳戶總額與各口袋餘額（同網站 pockets）。byId：口袋代號 → 餘額；savings／emergency 保留給舊呼叫端 */
+export function computePockets(transactions, openingBalance, pockets) {
+  let total = Number(openingBalance) || 0;
+  const byId = {};
+  for (const p of pockets || []) byId[p.id] = 0;
+  const bump = (id, v) => { byId[id] = (byId[id] || 0) + v; };
   for (const t of transactions) {
-    const c = classify(t);
+    const c = classify(t, pockets);
     const a = amt(t);
     if (c.kind === 'alloc') { bump(c.pocket, c.dir === 'in' ? a : -a); continue; }
     total += (t.type === 'inflow' ? 1 : -1) * a;
     if (c.pocket !== 'daily') bump(c.pocket, (t.type === 'inflow' ? 1 : -1) * a);
   }
-  return { total, savings, emergency, daily: total - savings - emergency };
+  const inPockets = Object.values(byId).reduce((s, v) => s + v, 0);
+  return { total, daily: total - inPockets, byId, savings: byId.savings || 0, emergency: byId.emergency || 0 };
 }
 
 /** 本期收支（同網站 inc / exp / netProfit / deptStats） */
-export function computeSummary(transactions, cycleDay, today) {
+export function computeSummary(transactions, cycleDay, today, pockets) {
   const key = currentPeriodKey(cycleDay, today);
   const { start, end } = periodRange(key, cycleDay);
   const flows = transactions.filter(t => {
     const d = dateOf(t);
-    return d.length === 10 && d >= start && d <= end && classify(t).kind === 'flow';
+    return d.length === 10 && d >= start && d <= end && classify(t, pockets).kind === 'flow';
   });
   const inc = flows.filter(t => t.type === 'inflow').reduce((s, t) => s + amt(t), 0);
   const exp = flows.filter(t => t.type === 'outflow').reduce((s, t) => s + amt(t), 0);

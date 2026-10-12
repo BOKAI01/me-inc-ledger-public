@@ -1,5 +1,6 @@
 /* LINE Messaging API：簽章驗證、回覆、卡片 */
 import { DEPARTMENTS, INCOME_CATS, catLabel, fmt } from './ledger.js';
+import { DEFAULT_POCKETS } from './pockets.js';
 
 export async function verifySignature(secret, body, signature) {
   if (!secret || !signature) return false;
@@ -42,7 +43,7 @@ const btn = (label, data, style = 'secondary') => ({
 });
 
 /** 確認卡片 */
-export function confirmCard(pid, e, ledgerName) {
+export function confirmCard(pid, e, ledgerName, pockets) {
   const isIn = e.type === 'inflow';
   const isAlloc = e.type === 'alloc';
   const title = isAlloc ? '確認撥款' : isIn ? '確認收入' : '確認支出';
@@ -50,7 +51,7 @@ export function confirmCard(pid, e, ledgerName) {
   const sign = isAlloc ? '' : isIn ? '+' : '-';
   const rows = isAlloc
     ? [
-        row('方向', catLabel(e.type, e.category, e.account)),
+        row('方向', catLabel(e.type, e.category, e.account, pockets)),
         row('說明', '口袋間配置，帳戶總額不變，不算收入或支出'),
         row('日期', e.date),
         row('帳本', ledgerName || '主帳本'),
@@ -88,18 +89,26 @@ export function confirmCard(pid, e, ledgerName) {
   };
 }
 
-/** 撥款方向的快速選單 */
-export function allocQuickReply(pid, i = 0) {
-  const opts = [
-    ['in', 'emergency', '👛→🛟 撥入緊急備用金'],
-    ['in', 'savings', '👛→🏦 撥入儲蓄口袋'],
-    ['out', 'emergency', '🛟→👛 緊急撥回日常'],
-    ['out', 'savings', '🏦→👛 儲蓄撥回日常'],
-  ];
+/**
+ * 撥款方向的快速選單（依使用者自訂的口袋產生）。LINE 快速選單最多 13 個：
+ * 口袋不多時「撥入／撥回」一起列出；口袋多時先列撥入，另附「改看撥回」切換。
+ */
+export function allocQuickReply(pid, i = 0, pockets = DEFAULT_POCKETS, dir) {
+  const list = pockets.filter(p => p.active !== false);
+  const both = !dir && list.length * 2 <= 11;
+  const dirs = both ? ['in', 'out'] : [dir || 'in'];
+  const opts = [];
+  for (const d of dirs) for (const p of list) {
+    opts.push([d, p.id, d === 'in' ? `👛→${p.icon} 撥入${p.name}` : `${p.icon}→👛 ${p.name}撥回`]);
+  }
   const items = opts.map(([d, k, label]) => ({
     type: 'action',
     action: { type: 'postback', label: label.slice(0, 20), data: `a=alloc&p=${pid}&i=${i}&d=${d}&k=${k}`, displayText: label },
   }));
+  if (!both && list.length) {
+    const other = (dir || 'in') === 'in' ? 'out' : 'in';
+    items.push({ type: 'action', action: { type: 'postback', label: other === 'out' ? '⇄ 改看撥回日常' : '⇄ 改看撥入口袋', data: `a=pick&p=${pid}&i=${i}&o=${other}`, displayText: other === 'out' ? '撥回日常' : '撥入口袋' } });
+  }
   items.push({ type: 'action', action: { type: 'postback', label: '↔ 改成支出', data: `a=type&p=${pid}&i=${i}&t=outflow`, displayText: '改成支出' } });
   return { items };
 }
@@ -124,20 +133,20 @@ export function categoryQuickReply(pid, type, i = 0) {
   });
   items.push({
     type: 'action',
-    action: { type: 'postback', label: '↪ 改成撥款', data: `a=alloc&p=${pid}&i=${i}&d=in&k=emergency`, displayText: '改成撥款' },
+    action: { type: 'postback', label: '↪ 改成撥款', data: `a=alloc&p=${pid}&i=${i}&d=in&k=`, displayText: '改成撥款' },
   });
   return { items };
 }
 
 /** 多筆確認卡片：點任一列可改該筆分類 */
-export function batchCard(pid, entries, ledgerName) {
+export function batchCard(pid, entries, ledgerName, pockets) {
   let inc = 0, exp = 0, alloc = 0;
   for (const e of entries) {
     if (e.type === 'inflow') inc += e.amount; else if (e.type === 'alloc') alloc += e.amount; else exp += e.amount;
   }
   const line = (e, i) => {
     const isAlloc = e.type === 'alloc';
-    const label = isAlloc ? catLabel(e.type, e.category, e.account) : `${catLabel(e.type, e.category).split(' ')[0]} ${e.client}`;
+    const label = isAlloc ? catLabel(e.type, e.category, e.account, pockets) : `${catLabel(e.type, e.category).split(' ')[0]} ${e.client}`;
     const sign = isAlloc ? '' : e.type === 'inflow' ? '+' : '-';
     const color = isAlloc ? '#A87B3D' : e.type === 'inflow' ? '#5B8C5A' : '#222222';
     return {

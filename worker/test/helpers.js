@@ -54,20 +54,27 @@ export async function makeServiceAccount() {
 
 /* 模擬外部服務：Google OAuth、Sheets、LINE、Apps Script */
 export function fakeWorld({ rows = [], settings = { openingBalance: 0, cycleDay: 1, fundTarget: 50000 }, sheetStatus = 200, appendDelay = 0 } = {}) {
-  const w = { rows: rows.map(r => [...r]), replies: [], gasCalls: [], appendCalls: 0 };
+  const w = { rows: rows.map(r => [...r]), replies: [], gasCalls: [], appendCalls: 0, pk: null };   // pk：「口袋」工作表
   w.fetch = async (url, init = {}) => {
     const u = String(url);
     if (u.startsWith('https://oauth2.googleapis.com/token')) return Response.json({ access_token: 'tok', expires_in: 3600 });
     if (u.startsWith('https://sheets.googleapis.com/')) {
       if (sheetStatus !== 200) return new Response('no', { status: sheetStatus });
-      if (u.includes('?fields=')) return Response.json({ sheets: [{ properties: { title: 'Transactions', sheetId: 0 } }, { properties: { title: 'Settings', sheetId: 1 } }] });
+      if (u.includes('?fields=')) return Response.json({ sheets: [{ properties: { title: 'Transactions', sheetId: 0 } }, { properties: { title: 'Settings', sheetId: 1 } },
+        ...(w.pk ? [{ properties: { title: '口袋', sheetId: 2 } }] : [])] });
+      if (u.includes(':batchUpdate') && !u.includes('/values')) {        // 只支援新增「口袋」工作表
+        const reqs = JSON.parse(init.body).requests;
+        if (reqs.length === 1 && reqs[0].addSheet?.properties.title === '口袋') { w.pk = []; return Response.json({ replies: [{ addSheet: { properties: { sheetId: 2, title: '口袋' } } }] }); }
+        throw new Error('unexpected fetch ' + u);
+      }
+      const pkRange = decodeURIComponent(u).includes("'口袋'") && w.pk ? [{ values: w.pk }] : [];
       if (u.includes(':batchGet') && decodeURIComponent(u).includes("'Settings'")) {
         w.ledgerReads = (w.ledgerReads || 0) + 1;
         const set = [['key', 'value'], ...Object.entries(settings).map(([k, v]) => [k, v])];
-        return Response.json({ valueRanges: [{ values: [HEADER, ...w.rows] }, { values: set }] });
+        return Response.json({ valueRanges: [{ values: [HEADER, ...w.rows] }, { values: set }, ...pkRange] });
       }
       if (u.includes(':batchGet')) {
-        return Response.json({ valueRanges: [{ values: [HEADER] }, { values: [['id'], ...w.rows.map(r => [r[0]])] }] });
+        return Response.json({ valueRanges: [{ values: [HEADER] }, { values: [['id'], ...w.rows.map(r => [r[0]])] }, ...pkRange] });
       }
       const setRows = () => [['key', 'value'], ...Object.entries(settings).map(([k, v]) => [k, v])];
       if (u.includes('/values/') && !u.includes(':append')) {           // 讀最後一列（values.get）
@@ -76,6 +83,10 @@ export function fakeWorld({ rows = [], settings = { openingBalance: 0, cycleDay:
       }
       if (u.includes('/values:batchUpdate')) {                            // 寫入指定列
         const data = JSON.parse(init.body).data;
+        if (data.every(d => decodeURIComponent(d.range).includes("'口袋'"))) {   // 口袋工作表（整張重寫）
+          w.pk = data[0].values.filter(r => r.some(c => c !== ''));
+          return Response.json({});
+        }
         if (data.every(d => decodeURIComponent(d.range).includes("'Settings'"))) {   // 設定工作表
           settings = { ...settings };
           for (const d of data) {
@@ -86,7 +97,7 @@ export function fakeWorld({ rows = [], settings = { openingBalance: 0, cycleDay:
           }
           return Response.json({});
         }
-        w.appendCalls++;
+        if (data.every(d => /!A\d+$/.test(decodeURIComponent(d.range)))) w.appendCalls++;   // 只算整列寫入（新增交易）
         if (appendDelay) await new Promise(r => setTimeout(r, appendDelay));
         for (const d of data) {
           const row = Number(decodeURIComponent(d.range).match(/!A(\d+)$/)[1]);
@@ -191,7 +202,9 @@ export function fakeSheetsApi(books, log = []) {
     const tabs = () => Object.keys(book).filter(k => k !== '__title');
     if (rest.startsWith('?fields=')) return Response.json({ sheets: tabs().map((title, i) => ({ properties: { title, sheetId: i, gridProperties: { rowCount: 1000 } } })) });
     if (rest.startsWith(':batchUpdate')) {
+      const replies = [];
       for (const r of JSON.parse(init.body).requests) {
+        if (r.addSheet) { const title = r.addSheet.properties.title; book[title] = []; replies.push({ addSheet: { properties: { title, sheetId: tabs().indexOf(title) } } }); continue; }
         const t = r.updateSheetProperties?.properties;
         if (t?.title) {
           const old = tabs()[t.sheetId];
@@ -207,7 +220,7 @@ export function fakeSheetsApi(books, log = []) {
           rows.splice(destinationIndex - moved.length, 0, ...moved);
         }
       }
-      return Response.json({});
+      return Response.json({ replies });
     }
     if (rest.startsWith('/values:batchGet')) {
       const ranges = [...rest.matchAll(/ranges=([^&]+)/g)].map(x => x[1]);

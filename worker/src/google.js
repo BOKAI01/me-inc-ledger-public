@@ -3,6 +3,9 @@ import {
   TAB_TXN, TAB_SET, TAB_TXN_EN, TAB_SET_EN, HEADER_ZH, HEADER_EN, HIDDEN_COLS, colKey, isZhHeader, zhHeaderOf, toSheet, fromSheet,
   isZhSettings, setHeaderZh, settingToSheet, settingFromSheet,
 } from './zh.js';
+import {
+  POCKET_TAB, POCKET_HEADER, defaultPockets, parsePocketRows, pocketRow, accountFromSheet, accountToSheet, DEFAULT_POCKETS,
+} from './pockets.js';
 
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -91,6 +94,7 @@ export async function sheetTabs(token, sheetId, fetchImpl = fetch) {
   const pick = (zh, en, i) => (titles.includes(zh) ? zh : titles.includes(en) ? en : titles[i] || en);
   const t = {
     txn: pick(TAB_TXN, TAB_TXN_EN, 0), set: pick(TAB_SET, TAB_SET_EN, 1),
+    pk: titles.includes(POCKET_TAB) ? POCKET_TAB : null,
     gids: Object.fromEntries(props.map(p => [p.title, p.sheetId])),
     rows: Object.fromEntries(props.map(p => [p.title, p.gridProperties?.rowCount || 0])),
   };
@@ -114,8 +118,9 @@ export async function ensureZh(token, sheetId, fetchImpl = fetch) {
  * 任何舊版本的帳本（包含重新綁定回來的舊帳本）第一次被讀取時會自動升級，使用者不用做任何事。
  *   v1：中文化（工作表、標題、內容）
  *   v2：補齊缺少的欄位、標題列回到第一列、記錄格式版本
+ *   v3：新增「口袋」工作表（自訂口袋），原本的儲蓄／緊急備用金與目標金額搬進去
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 async function migrate(token, sheetId, fetchImpl) {
   const t = await toZh(token, sheetId, fetchImpl);
@@ -153,6 +158,10 @@ async function upgrade(token, sheetId, t, fetchImpl) {
     const note = '帳本格式版本（系統自動維護，請勿修改）';
     if (verRow >= 0) data.push({ range: `'${t.set}'!B${verRow + 1}`, values: [[SCHEMA_VERSION]] });
     else data.push({ range: `'${t.set}'!A${Math.max(sets.length, 1) + 1}`, values: [[zh ? settingToSheet('schemaVersion') : 'schemaVersion', SCHEMA_VERSION, note]] });
+    if (!t.pk) {                                                   // v3：建立「口袋」工作表，沿用原本的目標金額
+      const settings = Object.fromEntries(sets.slice(1).map(r => [settingFromSheet(r?.[0]), r?.[1]]));
+      await ensurePocketTab(token, sheetId, t, defaultPockets(settings), fetchImpl);
+    }
     await sheetsFetch(token, `/${sheetId}/values:batchUpdate`, { method: 'POST', body: JSON.stringify({ valueInputOption: 'RAW', data }) }, fetchImpl);
     const reqs = formatRequests(t.gids[t.txn], t.gids[t.set], keys);
     if (reqs.length) await sheetsFetch(token, `/${sheetId}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests: reqs }) }, fetchImpl);
@@ -210,7 +219,7 @@ async function toZh(token, sheetId, fetchImpl) {
     reqs.push(...formatRequests(gTxn, gSet, keys));
     if (reqs.length) {
       await sheetsFetch(token, `/${sheetId}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests: reqs }) }, fetchImpl);
-      const nt = { txn: TAB_TXN, set: TAB_SET, gids: { ...t.gids, [TAB_TXN]: gTxn, [TAB_SET]: gSet }, rows: { ...t.rows, [TAB_TXN]: t.rows[t.txn], [TAB_SET]: t.rows[t.set] } };
+      const nt = { txn: TAB_TXN, set: TAB_SET, pk: t.pk, gids: { ...t.gids, [TAB_TXN]: gTxn, [TAB_SET]: gSet }, rows: { ...t.rows, [TAB_TXN]: t.rows[t.txn], [TAB_SET]: t.rows[t.set] } };
       tabCache.set(sheetId, nt);
       Object.assign(t, nt);
     }
@@ -292,10 +301,12 @@ export function formatRequests(gTxn, gSet, keys) {
 export async function readHeaderAndIds(token, sheetId, fetchImpl = fetch) {
   const t = await ensureZh(token, sheetId, fetchImpl);
   const j = await sheetsFetch(token,
-    `/${sheetId}/values:batchGet?ranges=${rngIn(t.txn, '1:1')}&ranges=${rngIn(t.txn, 'A:A')}&majorDimension=ROWS`, {}, fetchImpl);
+    `/${sheetId}/values:batchGet?ranges=${rngIn(t.txn, '1:1')}&ranges=${rngIn(t.txn, 'A:A')}`
+    + (t.pk ? `&ranges=${rngIn(t.pk, 'A:F')}` : '') + '&majorDimension=ROWS', {}, fetchImpl);
   const header = (j.valueRanges?.[0]?.values?.[0] || []).map(String);
   const ids = (j.valueRanges?.[1]?.values || []).slice(1).map(r => String(r[0] ?? ''));
-  return { header, ids, tabs: t };
+  const pockets = t.pk ? parsePocketRows(j.valueRanges?.[2]?.values) : DEFAULT_POCKETS;
+  return { header, ids, tabs: t, pockets };
 }
 
 /* 試算表日期序號（1899-12-30 起算的天數）→ yyyy-MM-dd */
@@ -325,6 +336,7 @@ export async function readLedger(token, sheetId, fetchImpl = fetch) {
   const tabs = await ensureZh(token, sheetId, fetchImpl);
   const j = await sheetsFetch(token,
     `/${sheetId}/values:batchGet?ranges=${rngIn(tabs.txn, 'A:Z')}&ranges=${rngIn(tabs.set, 'A:B')}`
+    + (tabs.pk ? `&ranges=${rngIn(tabs.pk, 'A:F')}` : '')
     + `&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`, {}, fetchImpl);
   const rows = j.valueRanges?.[0]?.values || [];
   const header = (rows[0] || []).map(String);
@@ -350,16 +362,22 @@ export async function readLedger(token, sheetId, fetchImpl = fetch) {
     settings[k] = r[1];
     settingRows[k] = idx + 1;
   });
+  const pkRows = tabs.pk ? j.valueRanges?.[2]?.values : null;
+  // 沒有口袋工作表（或連標題列都沒有）→ 預設兩個口袋；只有標題列 → 使用者刪光了口袋
+  const pockets = pkRows && pkRows.length ? parsePocketRows(pkRows) : defaultPockets(settings);
+  for (const t of transactions) if (t.account) t.account = accountFromSheet(t.account, pockets);   // 名稱 → 口袋代號
+  const tgt = (id, fb) => { const p = pockets.find(x => x.id === id); return p ? p.target : fb; };
   return {
     header,
     tabs,
     transactions,
     settings,
     settingRows,
+    pockets,
     openingBalance: Number(settings.openingBalance) || 0,
     cycleDay: Number(settings.cycleDay) || 1,
-    fundTarget: Number(settings.fundTarget) || 50000,
-    savingsTarget: Math.max(0, Number(settings.savingsTarget) || 0),
+    fundTarget: tgt('emergency', Number(settings.fundTarget) || 50000),
+    savingsTarget: tgt('savings', Math.max(0, Number(settings.savingsTarget) || 0)),
   };
 }
 
@@ -367,7 +385,9 @@ export async function readLedger(token, sheetId, fetchImpl = fetch) {
 export function txnCell(d, key, row, value) {
   const ci = d.header.map(colKey).indexOf(key);
   if (ci < 0) return null;
-  return { a1: `'${d.tabs.txn}'!${colName(ci)}${row}`, value: isZhHeader(d.header) ? toSheet(key, value) : value };
+  const zh = isZhHeader(d.header);
+  if (key === 'account') return { a1: `'${d.tabs.txn}'!${colName(ci)}${row}`, value: zh ? accountToSheet(value, d.pockets || DEFAULT_POCKETS) : value };
+  return { a1: `'${d.tabs.txn}'!${colName(ci)}${row}`, value: zh ? toSheet(key, value) : value };
 }
 
 /** 寫入一項設定（存在就更新，否則新增一列） */
@@ -415,7 +435,7 @@ export function colName(i) {
 }
 
 /** 依標題順序附加多列（一次 API 呼叫）；中文帳本自動翻譯內容 */
-export async function appendTxns(token, sheetId, header, txns, fetchImpl = fetch) {
+export async function appendTxns(token, sheetId, header, txns, fetchImpl = fetch, pockets = DEFAULT_POCKETS) {
   const keys = header.map(colKey);
   if (!keys.length || keys[0] !== 'id') throw new Error('記帳明細工作表標題列不符');
   if (!txns.length) return null;
@@ -423,9 +443,42 @@ export async function appendTxns(token, sheetId, header, txns, fetchImpl = fetch
   const tabs = await sheetTabs(token, sheetId, fetchImpl);
   const values = txns.map(txn => keys.map(k => {
     const v = txn[k] === undefined ? '' : txn[k];
-    return zh && v !== '' ? toSheet(k, v) : zh && k === 'account' ? toSheet(k, '') : v;
+    if (zh && k === 'account') return accountToSheet(v, pockets);    // 口袋代號 → 名稱（自訂口袋）
+    return zh && v !== '' ? toSheet(k, v) : v;
   }));
   return appendRows(token, sheetId, tabs.txn, values, fetchImpl);
 }
-export const appendTxn = (token, sheetId, header, txn, fetchImpl = fetch) =>
-  appendTxns(token, sheetId, header, [txn], fetchImpl);
+export const appendTxn = (token, sheetId, header, txn, fetchImpl = fetch, pockets) =>
+  appendTxns(token, sheetId, header, [txn], fetchImpl, pockets);
+
+/* ---------- 口袋工作表 ---------- */
+/** 沒有「口袋」工作表就建立一個，並寫入給定的口袋清單 */
+export async function ensurePocketTab(token, sheetId, t, pockets, fetchImpl = fetch) {
+  if (t.pk) return t;
+  const r = await sheetsFetch(token, `/${sheetId}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests: [
+    { addSheet: { properties: { title: POCKET_TAB, gridProperties: { frozenRowCount: 1 } } } },
+  ] }) }, fetchImpl);
+  const gid = r?.replies?.[0]?.addSheet?.properties?.sheetId;
+  Object.assign(t, { pk: POCKET_TAB, gids: { ...t.gids, [POCKET_TAB]: gid }, rows: { ...t.rows, [POCKET_TAB]: 1000 } });
+  tabCache.set(sheetId, t);
+  await writePockets(token, sheetId, t, pockets, fetchImpl);
+  return t;
+}
+
+/** 整張「口袋」工作表重寫（口袋最多 8 個＋已刪除的，資料量很小） */
+export async function writePockets(token, sheetId, t, pockets, fetchImpl = fetch) {
+  const rows = [POCKET_HEADER, ...pockets.map(pocketRow)];
+  const blank = Array(6).fill('');
+  while (rows.length < 30) rows.push(blank);                      // 清掉多出來的舊列
+  return sheetsFetch(token, `/${sheetId}/values:batchUpdate`, { method: 'POST', body: JSON.stringify({
+    valueInputOption: 'RAW', data: [{ range: `'${POCKET_TAB}'!A1:F${rows.length}`, values: rows }],
+  }) }, fetchImpl);
+}
+
+/** 口袋改名後，把交易明細「口袋」欄的舊名稱一起換成新名稱 */
+export async function rewriteAccountColumn(token, sheetId, d, pockets, fetchImpl = fetch) {
+  const ci = d.header.map(colKey).indexOf('account');
+  if (ci < 0 || !d.transactions.length || !isZhHeader(d.header)) return null;
+  const cells = d.transactions.filter(t => t.account).map(t => ({ a1: `'${d.tabs.txn}'!${colName(ci)}${t._row}`, value: accountToSheet(t.account, pockets) }));
+  return writeCells(token, sheetId, cells, fetchImpl);
+}

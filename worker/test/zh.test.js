@@ -1,3 +1,4 @@
+import { accountFromSheet, defaultPockets } from '../src/pockets.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readLedger, readHeaderAndIds, appendTxns, txnCell, writeCells, setSetting, resetSheetCaches, SCHEMA_VERSION } from '../src/google.js';
@@ -18,13 +19,18 @@ function oldBook() {
 }
 
 test('中英對照：讀寫都可逆，手動輸入的簡寫也看得懂', () => {
-  for (const [k, v] of [['type', 'outflow'], ['type', 'alloc'], ['category', 'food'], ['category', 'other_in'], ['category', 'alloc_out'], ['account', 'savings'], ['account', '']]) {
+  for (const [k, v] of [['type', 'outflow'], ['type', 'alloc'], ['category', 'food'], ['category', 'other_in'], ['category', 'alloc_out'], ['account', '']]) {
     assert.equal(fromSheet(k, toSheet(k, v)), v, `${k}:${v}`);
   }
   assert.equal(fromSheet('category', '餐飲'), 'food');
   assert.equal(fromSheet('category', '食・餐飲部'), 'food');
   assert.equal(fromSheet('category', '行'), 'transport');
-  assert.equal(fromSheet('account', '儲蓄'), 'savings');
+  // 口袋名稱交給「口袋」工作表對應（可改名、可同名重建），這一層只認日常與舊英文代號
+  assert.equal(fromSheet('account', 'savings'), 'savings');
+  assert.equal(fromSheet('account', '日常'), '');
+  assert.equal(fromSheet('account', ' 儲蓄 '), '儲蓄');
+  assert.equal(accountFromSheet('儲蓄', defaultPockets()), 'savings');
+  assert.equal(accountFromSheet('儲蓄口袋', [{ id: 'savings', name: '儲蓄口袋（已刪除 10/01）', active: false }, { id: 'p9', name: '儲蓄口袋', active: true }]), 'p9');
   assert.equal(fromSheet('received', '是'), true);
   assert.equal(fromSheet('received', '否'), false);
   assert.equal(toSheet('received', true), '是');
@@ -43,7 +49,9 @@ test('舊帳本自動中文化：改名、翻譯、格式；日期金額不動�
   const d = await readLedger('T', 'S', f);
 
   // 工作表改名、標題與內容中文
-  assert.deepEqual(Object.keys(books.S), ['記帳明細', '設定']);
+  assert.deepEqual(Object.keys(books.S), ['記帳明細', '設定', '口袋']);       // v3：新增口袋工作表
+  assert.deepEqual(books.S['口袋'].slice(0, 3).map(r => r.slice(0, 5)), [
+    ['代號', '名稱', '圖示', '目標金額', '狀態'], ['savings', '儲蓄口袋', '🏦', 0, '使用中'], ['emergency', '緊急備用金', '🛟', 50000, '使用中']]);
   const T = books.S['記帳明細'], S = books.S['設定'];
   assert.deepEqual(T[0], HEADER_ZH);
   assert.deepEqual(T.slice(1).map(r => [r[1], r[2], r[8], r[10]]), [

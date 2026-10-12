@@ -24,10 +24,11 @@ export function guessCategory(item, type) {
   return type === 'inflow' ? 'other_in' : 'other_out';
 }
 
-export const POCKET_NAMES = { savings: '儲蓄口袋', emergency: '緊急備用金' };
+import { DEFAULT_POCKETS } from './pockets.js';
 
-export function allocEntry(dir, pocket) {
-  const name = POCKET_NAMES[pocket];
+/** 撥款分錄；pockets 給目前的口袋清單（自訂口袋），省略時用預設兩個口袋 */
+export function allocEntry(dir, pocket, pockets = DEFAULT_POCKETS) {
+  const name = (pockets.find(p => p.id === pocket) || DEFAULT_POCKETS.find(p => p.id === pocket) || { name: pocket }).name;
   return {
     type: 'alloc',
     category: dir === 'out' ? 'alloc_out' : 'alloc_in',
@@ -40,6 +41,7 @@ export function allocEntry(dir, pocket) {
  * 「撥款 緊急 5000」「撥款 儲蓄 3000」→ 日常 → 口袋
  * 「撥回 儲蓄 2000」「撥款 緊急→日常 2000」→ 口袋 → 日常
  * 沒寫口袋時與網站相同，預設緊急備用金
+ * 自訂口袋：pocketText 保留使用者寫的口袋名稱，由呼叫端依實際的口袋清單比對
  */
 function parseAlloc(head) {
   const m = head.match(/^(撥款|撥入|轉入|存入|撥回|轉回|提領|動用)\s*(.*)$/);
@@ -48,7 +50,8 @@ function parseAlloc(head) {
   let dir = /^(撥回|轉回|提領|動用)$/.test(m[1]) ? 'out' : 'in';
   if (/(→|->|到|回|至)\s*日常/.test(rest)) dir = 'out';
   const pocket = /儲蓄|存款/.test(rest) ? 'savings' : 'emergency';
-  return allocEntry(dir, pocket);
+  const pocketText = rest.replace(/(→|->|到|回|至)\s*日常(口袋)?/g, '').replace(/^日常(口袋)?\s*(→|->|到|至)/, '').replace(/^(到|至|進|給)/, '').trim();
+  return { ...allocEntry(dir, pocket), pocketText };
 }
 
 const toHalfWidth =(s) => s

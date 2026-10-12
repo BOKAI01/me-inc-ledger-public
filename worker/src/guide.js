@@ -43,19 +43,21 @@ const PERSONAL = [
     chat(me('10/6\n早餐 35\n午餐 120\n飲料 55'), card('確認 3 筆', [['10/6 早餐', '-$35'], ['10/6 午餐', '-$120'], ['10/6 飲料', '-$55']], ['全部寫入', '取消']))),
   step(4, '隨時查詢',
     `<p>每次回覆下方都有快捷按鈕，點一下就能查：</p>
-     <ul><li>${code('餘額')} 帳戶總額與三個口袋</li><li>${code('摘要')} 本期收入、支出、前三大花費</li><li>${code('網站')} 圖表與各期比較，也能修改、刪除紀錄</li><li>${code('我的帳本')} 打開 Google 試算表</li></ul>`,
+     <ul><li>${code('餘額')} 帳戶總額與各個口袋</li><li>${code('摘要')} 本期收入、支出、前三大花費</li><li>${code('網站')} 圖表與各期比較，也能修改、刪除紀錄</li><li>${code('我的帳本')} 打開 Google 試算表</li></ul>`,
     chat(me('餘額'), bot('💰 帳戶總額 $58,900\n👛 日常口袋 $46,700\n🏦 儲蓄口袋 $12,200 / $100,000\n　還差 $87,800\n🛟 緊急備用金 $0 / $50,000'),
       chips(['餘額', '本期摘要', '開啟網站', '和朋友分帳', '說明']))),
-  step(5, '三個口袋：日常、儲蓄、緊急備用金',
-    `<p>錢都在同一個帳戶，只是分成三個口袋管理。<b>撥款只是在口袋之間移動</b>，不算收入也不算支出。</p>
+  step(5, '口袋：像子帳戶一樣分開管理',
+    `<p>錢都在同一個帳戶，只是分成幾個口袋管理。<b>撥款只是在口袋之間移動</b>，不算收入也不算支出。</p>
      <div class="ex">${code('撥款 儲蓄 3000')}${code('撥款 緊急 5000')}${code('撥回 儲蓄 2000')}</div>
-     <p>兩個口袋都能設定目標，傳「餘額」就看得到進度：</p>
-     <div class="ex">${code('儲蓄目標 100000')}${code('緊急目標 150000')}</div>`,
+     <p>預設有儲蓄、緊急備用金兩個口袋，可以<b>自己命名、新增、刪除</b>（最多 8 個），每個口袋都能設定目標：</p>
+     <div class="ex">${code('新增口袋 旅遊基金')}${code('口袋改名 儲蓄 買房基金')}${code('旅遊基金目標 50000')}${code('刪除口袋 旅遊基金')}</div>
+     <ul><li>改名時，過去的紀錄會一起換成新名稱</li><li>刪除前會先請你確認；口袋裡的錢會自動記一筆撥回日常</li><li>傳 ${code('口袋')} 或到網站「設定 → 口袋管理」都能管理</li></ul>`,
     `<div class="pockets" aria-hidden="true">
       <div class="pk daily"><i>👛</i><b>日常口袋</b><small>平常的收入、支出</small></div>
       <div class="arrows"><span>撥款 →</span><span>← 撥回</span></div>
       <div class="pk-col"><div class="pk save"><i>🏦</i><b>儲蓄口袋</b><small>目標 $100,000</small><em style="--p:30%"></em></div>
-        <div class="pk emer"><i>🛟</i><b>緊急備用金</b><small>目標 $150,000</small><em style="--p:55%"></em></div></div>
+        <div class="pk emer"><i>🛟</i><b>緊急備用金</b><small>目標 $150,000</small><em style="--p:55%"></em></div>
+        <div class="pk save"><i>✈️</i><b>旅遊基金</b><small>自己新增的口袋</small><em style="--p:20%"></em></div></div>
     </div>`),
   step(6, '帳本網站',
     `<p>傳「網站」，按「開啟帳本網站」。在 LINE 裡打開會<b>自動用你的 LINE 帳號登入</b>；用電腦開啟時按一次「用 LINE 登入」。</p>
@@ -103,6 +105,7 @@ const CHEAT = `
 <tr><td>${code('餘額')}／${code('摘要')}</td><td>查詢</td></tr>
 <tr><td>${code('網站')}</td><td>開啟帳本網站</td></tr>
 <tr><td>${code('儲蓄目標 100000')}</td><td>設定目標</td></tr>
+<tr><td>${code('口袋')}</td><td>新增、改名、刪除口袋</td></tr>
 <tr><td>${code('登出所有裝置')}</td><td>網站全部重新登入</td></tr>
 <tr><td>${code('刪除我的資料')}</td><td>刪除伺服器上的資料</td></tr>
 </table></div>
@@ -241,7 +244,7 @@ export function guideCard(base, opts = {}) {
       ] },
       body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: g
         ? [tile('➕', '+晚餐 3000', '記一筆，預設你先付、全員平均分攤'), tile('🧮', '結算', '算出誰該付誰、確認付款與收款'), tile('📥', '轉入我的帳本', '結束後把自己負擔的部分記到個人帳本')]
-        : [tile('✍️', '午餐 120', '傳一句話就記一筆，按確認才寫入'), tile('💰', '餘額／摘要', '看三個口袋與本期花費'), tile('👥', '和朋友分帳', '在 LINE 群組記帳、自動算出誰付誰')] },
+        : [tile('✍️', '午餐 120', '傳一句話就記一筆，按確認才寫入'), tile('💰', '餘額／摘要', '看各個口袋與本期花費'), tile('👥', '和朋友分帳', '在 LINE 群組記帳、自動算出誰付誰')] },
       footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: g
         ? [btn('看群組分帳圖文說明', `${base}/guide#group`, true), btn('看全部說明', `${base}/guide`)]
         : [btn('看個人記帳圖文說明', `${base}/guide#personal`, true), btn('看群組分帳說明', `${base}/guide#group`)] },

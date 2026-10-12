@@ -83,7 +83,11 @@ test('line: 簽章驗證', async () => {
 
 test('parse: 撥款', () => {
   const a = parseEntry('撥款 緊急 5000', T);
-  assert.deepEqual(a, { type: 'alloc', category: 'alloc_in', account: 'emergency', client: '撥入緊急備用金', amount: 5000, date: T });
+  assert.deepEqual(a, { type: 'alloc', category: 'alloc_in', account: 'emergency', client: '撥入緊急備用金', amount: 5000, date: T, pocketText: '緊急' });
+  assert.equal(parseEntry('撥款 旅遊基金 2000', T).pocketText, '旅遊基金');      // 自訂口袋：名稱交給呼叫端比對
+  assert.equal(parseEntry('撥回 旅遊基金 500', T).category, 'alloc_out');
+  assert.equal(parseEntry('撥款 日常→旅遊 300', T).pocketText, '旅遊');
+  assert.equal(parseEntry('撥款 旅遊→日常 300', T).pocketText, '旅遊');
   assert.equal(parseEntry('撥款 儲蓄 3000', T).account, 'savings');
   assert.equal(parseEntry('撥款 3000', T).account, 'emergency');            // 同網站預設
   const b = parseEntry('撥回 儲蓄 2000', T);
