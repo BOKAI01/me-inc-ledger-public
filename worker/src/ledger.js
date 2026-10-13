@@ -22,13 +22,19 @@ export const findIncome = (id) => INCOME_CATS.find(c => c.id === id) || INCOME_C
 import { DEFAULT_POCKETS, pocketById, findPocket } from './pockets.js';
 
 /** 撥款方向的文字，例如「👛 日常 → ✈️ 旅遊基金」。pockets 省略時用預設的兩個口袋 */
-export const allocLabel = (category, account, pockets = DEFAULT_POCKETS) => {
-  const pk = pocketById(pockets, account) || pocketById(DEFAULT_POCKETS, account) || { icon: '👝', name: account || '口袋' };
-  const p = `${pk.icon} ${pk.name}`;
+const pocketTag = (id, pockets) => {
+  if (!id || id === 'daily') return '👛 日常';
+  const pk = pocketById(pockets, id) || pocketById(DEFAULT_POCKETS, id) || { icon: '👝', name: id || '口袋' };
+  return `${pk.icon} ${pk.name}`;
+};
+/** 撥款方向文字；alloc_move（口袋互轉）用 from 標示轉出的口袋 */
+export const allocLabel = (category, account, pockets = DEFAULT_POCKETS, from = '') => {
+  if (category === 'alloc_move') return `${pocketTag(from, pockets)} → ${pocketTag(account, pockets)}`;
+  const p = pocketTag(account, pockets);
   return category === 'alloc_out' ? `${p} → 👛 日常` : `👛 日常 → ${p}`;
 };
-export const catLabel = (type, cat, account, pockets) => {
-  if (type === 'alloc') return allocLabel(cat, account, pockets);
+export const catLabel = (type, cat, account, pockets, from) => {
+  if (type === 'alloc') return allocLabel(cat, account, pockets, from);
   const c = type === 'inflow' ? findIncome(cat) : findDept(cat);
   return `${c.emoji} ${type === 'inflow' ? c.name : c.fullName}`;
 };
@@ -136,3 +142,25 @@ export function computeSummary(transactions, cycleDay, today, pockets) {
 }
 
 export const fmt = (n) => new Intl.NumberFormat('zh-TW').format(Math.round(Number(n) || 0));
+
+/**
+ * 撥款：從 from 口袋轉到 to 口袋（'' 代表日常）。
+ * 一邊是日常 → 一般撥款；兩邊都是口袋 → alloc_move（寫入時拆成「轉出」「轉入」兩筆，帳戶總額不變）
+ */
+export function transferPatch(from, to, pockets = DEFAULT_POCKETS) {
+  const f = from === 'daily' ? '' : from || '', t = to === 'daily' ? '' : to || '';
+  const nm = (id) => (pocketById(pockets, id) || pocketById(DEFAULT_POCKETS, id) || { name: id }).name;
+  if (!f) return { type: 'alloc', category: 'alloc_in', account: t, from: '', client: `撥入${nm(t)}` };
+  if (!t) return { type: 'alloc', category: 'alloc_out', account: f, from: '', client: `${nm(f)}撥回日常` };
+  return { type: 'alloc', category: 'alloc_move', account: t, from: f, client: `口袋互轉：${nm(f)}→${nm(t)}` };
+}
+
+/** 寫入試算表用：口袋互轉拆成兩筆撥款（同一個 id 前綴，重複按也不會多寫） */
+export function expandTransfer(txn) {
+  if (txn.type !== 'alloc' || txn.category !== 'alloc_move') return [txn];
+  const { from, ...base } = txn;
+  return [
+    { ...base, id: `${txn.id}a`, category: 'alloc_out', account: from },
+    { ...base, id: `${txn.id}b`, category: 'alloc_in', account: txn.account },
+  ];
+}

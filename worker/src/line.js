@@ -51,7 +51,7 @@ export function confirmCard(pid, e, ledgerName, pockets) {
   const sign = isAlloc ? '' : isIn ? '+' : '-';
   const rows = isAlloc
     ? [
-        row('方向', catLabel(e.type, e.category, e.account, pockets)),
+        row('方向', catLabel(e.type, e.category, e.account, pockets, e.from)),
         row('說明', '口袋間配置，帳戶總額不變，不算收入或支出'),
         row('日期', e.date),
         row('帳本', ledgerName || '主帳本'),
@@ -113,6 +113,29 @@ export function allocQuickReply(pid, i = 0, pockets = DEFAULT_POCKETS, dir) {
   return { items };
 }
 
+/**
+ * 撥款兩步驟：① 從哪個口袋轉出 ② 轉到哪個口袋。日常加上最多 8 個口袋，不超過 LINE 快速選單 13 個的上限。
+ */
+const pocketChoices = (pockets) => [{ id: 'daily', icon: '👛', name: '日常' }, ...pockets.filter(p => p.active !== false)];
+export function transferFromQuickReply(pid, i = 0, pockets = DEFAULT_POCKETS) {
+  const items = pocketChoices(pockets).map(p => ({
+    type: 'action',
+    action: { type: 'postback', label: `${p.icon} ${p.name}`.slice(0, 20), data: `a=from&p=${pid}&i=${i}&f=${p.id}`, displayText: `從${p.name}轉出` },
+  }));
+  items.push({ type: 'action', action: { type: 'postback', label: '↔ 改成支出', data: `a=type&p=${pid}&i=${i}&t=outflow`, displayText: '改成支出' } });
+  items.push({ type: 'action', action: { type: 'postback', label: '✕ 取消', data: `a=no&p=${pid}`, displayText: '取消' } });
+  return { items };
+}
+export function transferToQuickReply(pid, i, pockets, from) {
+  const items = pocketChoices(pockets).filter(p => p.id !== from).map(p => ({
+    type: 'action',
+    action: { type: 'postback', label: `${p.icon} ${p.name}`.slice(0, 20), data: `a=to&p=${pid}&i=${i}&f=${from}&t=${p.id}`, displayText: `轉入${p.name}` },
+  }));
+  items.push({ type: 'action', action: { type: 'postback', label: '↩ 重選轉出', data: `a=pick&p=${pid}&i=${i}`, displayText: '重選轉出口袋' } });
+  items.push({ type: 'action', action: { type: 'postback', label: '✕ 取消', data: `a=no&p=${pid}`, displayText: '取消' } });
+  return { items };
+}
+
 /** 改分類的快速選單 */
 export function categoryQuickReply(pid, type, i = 0) {
   const cats = type === 'inflow'
@@ -146,7 +169,7 @@ export function batchCard(pid, entries, ledgerName, pockets) {
   }
   const line = (e, i) => {
     const isAlloc = e.type === 'alloc';
-    const label = isAlloc ? catLabel(e.type, e.category, e.account, pockets) : `${catLabel(e.type, e.category).split(' ')[0]} ${e.client}`;
+    const label = isAlloc ? catLabel(e.type, e.category, e.account, pockets, e.from) : `${catLabel(e.type, e.category).split(' ')[0]} ${e.client}`;
     const sign = isAlloc ? '' : e.type === 'inflow' ? '+' : '-';
     const color = isAlloc ? '#A87B3D' : e.type === 'inflow' ? '#5B8C5A' : '#222222';
     return {

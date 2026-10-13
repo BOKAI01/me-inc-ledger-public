@@ -22,7 +22,14 @@ function setup(worldOpts) {
   const tap = (data, uid = UID) => handleEvent({ type: 'postback', replyToken: 'r', source: { userId: uid }, postback: { data } }, env, deps);
   const lastCard = () => world.replies.at(-1).messages[0];
   const pidOf = (card) => card.contents.footer.contents[0].action.data.match(/p=([0-9a-f]+)/)[1];
-  return { world, env, say, tap, lastCard, pidOf };
+  const qr = () => world.replies.at(-1).messages[0].quickReply.items.map(x => x.action);
+  const pidQ = () => qr()[0].data.match(/p=([0-9a-f]+)/)[1];
+  // 撥款兩步驟：① 選轉出 ② 選轉入
+  const route = async (from, to) => {
+    await tap(qr().find(a => a.data.includes(`a=from`) && a.data.endsWith(`f=${from}`)).data);
+    await tap(qr().find(a => a.data.includes(`a=to`) && a.data.endsWith(`t=${to}`)).data);
+  };
+  return { world, env, say, tap, lastCard, pidOf, qr, pidQ, route };
 }
 
 test('health 與簽章', async () => {
@@ -156,6 +163,9 @@ test('看不懂的訊息與說明', async () => {
 test('撥款：卡片 → 寫入 alloc 分錄，餘額只移動口袋', async () => {
   const s = setup({ rows: [['1', 'inflow', 'salary', '2026-10-05', 50000, '薪水', '', 0, true, '', '']] });
   await s.say('撥款 儲蓄 5000');
+  assert.match(s.world.lastText(), /撥款 \$5,000[\s\S]*① 請選擇從哪個口袋轉出/);
+  assert.deepEqual(s.qr().map(a => a.label), ['👛 日常', '🏦 儲蓄口袋', '🛟 緊急備用金', '↔ 改成支出', '✕ 取消']);
+  await s.route('daily', 'savings');
   const card = s.lastCard();
   assert.equal(card.contents.header.contents[0].text, '確認撥款');
   const pid = s.pidOf(card);
@@ -172,20 +182,47 @@ test('撥款：卡片 → 寫入 alloc 分錄，餘額只移動口袋', async ()
 test('撥款：改方向、支出改成撥款再改回', async () => {
   const s = setup();
   await s.say('撥款 緊急 2000');
+  await s.route('daily', 'emergency');
   let pid = s.pidOf(s.lastCard());
-  await s.tap(`a=pick&p=${pid}`);
-  assert.equal(s.world.replies.at(-1).messages[0].quickReply.items.length, 5);
-  await s.tap(`a=alloc&p=${pid}&d=out&k=savings`);
+  await s.tap(`a=pick&p=${pid}`);                                  // 改方向 → 重新走兩步驟
+  assert.match(s.world.lastText(), /① 請選擇從哪個口袋轉出/);
+  await s.route('savings', 'daily');
+  assert.match(JSON.stringify(s.lastCard()), /🏦 儲蓄口袋 → 👛 日常/);
   await s.tap(`a=ok&p=${pid}`);
   assert.equal(s.world.rows[0][2], 'alloc_out'); assert.equal(s.world.rows[0][10], 'savings');
 
   await s.say('存起來 1000');
   pid = s.pidOf(s.lastCard());
-  await s.tap(`a=alloc&p=${pid}&d=in&k=emergency`);
+  await s.tap(`a=alloc&p=${pid}&d=in&k=`);                         // 改成撥款 → 兩步驟
+  assert.match(s.world.lastText(), /① 請選擇從哪個口袋轉出/);
+  await s.tap(`a=alloc&p=${pid}&d=in&k=emergency`);                // 舊卡片的按鈕仍可用
   await s.tap(`a=type&p=${pid}&t=outflow`);
   await s.tap(`a=ok&p=${pid}`);
   const r = s.world.rows[1];
   assert.equal(r[1], 'outflow'); assert.equal(r[5], '存起來'); assert.equal(r[10], '');
+});
+
+test('撥款：口袋互轉寫成兩筆，總額不變；重複按確認不會多寫', async () => {
+  const s = setup({ rows: [['1', 'inflow', 'salary', '2026-10-05', 50000, '薪水', '', 0, true, '', '']] });
+  await s.say('撥款 儲蓄 5000'); await s.route('daily', 'savings');
+  await s.tap(`a=ok&p=${s.pidOf(s.lastCard())}`);
+  await s.say('撥款 2000');
+  await s.tap(s.qr().find(a => a.data.endsWith('f=savings')).data);
+  assert.match(s.world.lastText(), /從「儲蓄口袋」轉出[\s\S]*② 請選擇轉入哪個口袋/);
+  assert.ok(!s.qr().some(a => a.data.endsWith('t=savings')));     // 不能轉給自己
+  await s.tap(s.qr().find(a => a.data.endsWith('t=emergency')).data);
+  const card = s.lastCard();
+  assert.match(JSON.stringify(card), /🏦 儲蓄口袋 → 🛟 緊急備用金/);
+  const pid = s.pidOf(card);
+  await Promise.all([s.tap(`a=ok&p=${pid}`), s.tap(`a=ok&p=${pid}`)]);
+  const moved = s.world.rows.slice(2);
+  assert.deepEqual(moved.map(r => [r[1], r[2], r[4], r[10]]), [['alloc', 'alloc_out', 2000, 'savings'], ['alloc', 'alloc_in', 2000, 'emergency']]);
+  assert.match(s.world.replies.find(r => /已寫入/.test(r.messages[0].text || '') && /儲蓄口袋 → 🛟/.test(r.messages[0].text)).messages[0].text, /🏦 儲蓄口袋 → 🛟 緊急備用金/);
+  await s.say('餘額');
+  assert.match(s.world.lastText(), /帳戶總額 \$50,000/);
+  assert.match(s.world.lastText(), /儲蓄口袋 \$3,000/);
+  assert.match(s.world.lastText(), /緊急備用金 \$2,000/);
+  assert.match(s.world.lastText(), /日常口袋 \$45,000/);
 });
 
 test('多筆：一則訊息 3 筆 → 一張卡 → 一次寫入 3 列', async () => {

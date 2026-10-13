@@ -4,11 +4,11 @@
  *   POST /line/webhook  → LINE Messaging API webhook
  */
 import { rememberPockets, cachedPockets, lite } from './pocket-cache.js';
-import { verifySignature, reply, text, confirmCard, batchCard, categoryQuickReply, allocQuickReply } from './line.js';
+import { verifySignature, reply, text, confirmCard, batchCard, categoryQuickReply, allocQuickReply, transferFromQuickReply, transferToQuickReply } from './line.js';
 import { parseEntry, parseDateOnly, guessCategory, allocEntry } from './parse.js';
 import { readHeaderAndIds, readLedger, readPockets, appendTxns, setSetting, GoogleAuthError, SheetAccessError } from './google.js';
 import { tokenFor, AuthRevokedError, needsRelink, bindKey, tokKey, obKey, authLink, handleAuthStart, handleAuthCallback, handleFinish, handleRelink, privacyPage, page } from './oauth.js';
-import { computePockets, computeSummary, taipeiToday, catLabel, fmt } from './ledger.js';
+import { computePockets, computeSummary, taipeiToday, catLabel, fmt, transferPatch, expandTransfer } from './ledger.js';
 import { Entry, entryCall, withSheetLock } from './entry.js';
 import { handleApi } from './api.js';
 import { Split } from './split-do.js';
@@ -34,9 +34,8 @@ const HELP = [
   '（第一行只寫日期，後面各行都用那天）',
   '',
   '💱 撥款（口袋間配置，不算收支）：',
-  '・撥款 緊急 5000（日常 → 緊急備用金）',
-  '・撥款 儲蓄 3000（日常 → 儲蓄口袋）',
-  '・撥回 儲蓄 2000（儲蓄 → 日常）',
+  '・撥款 3000 → ① 選從哪個口袋轉出 ② 選轉入哪個口袋',
+  '・口袋之間也能直接互轉，例如 儲蓄 → 旅遊基金',
   '',
   '👝 自訂口袋（最多 8 個）：',
   '・口袋：查看所有口袋',
@@ -240,6 +239,10 @@ export async function handleEvent(ev, env, deps = {}) {
       items.push({ entry, txnId: `${now + i}${pid.slice(0, 4)}`, hadMemory: !!mem });
     }
     await entryCall(env, pid, 'create', { uid, sheetId: bind.sheetId, ledger: ledgerRef(bind), ledgerName, items, ...(pockets ? { pockets } : {}) });
+    // 單筆撥款：一律先選「從哪個口袋轉出」，再選「轉入哪個口袋」，最後才出確認卡
+    if (items.length === 1 && items[0].entry.type === 'alloc') {
+      return send(fromPrompt(pid, 0, items[0].entry, pockets, ''));
+    }
     const card = cardFor(pid, items, ledgerName, pockets);
     const extra = [...notes.map(n => text(n)), ...(bad.length ? [text(`以下 ${bad.length} 行看不懂，沒有放進卡片：\n${bad.map(b => '・' + b).join('\n')}`)] : [])];
     return send(extra.length ? [card, ...extra].slice(0, 5) : card);
@@ -292,9 +295,35 @@ export async function handleEvent(ev, env, deps = {}) {
       if (it.entry.type === 'alloc') {
         const pk = (await getPockets(env, bind, fetchImpl)).filter(x => x.active !== false);   // 用最新清單，卡片建立後才新增的口袋也選得到
         if (!pk.length) return send(text('你目前沒有任何口袋。先傳「新增口袋 旅遊基金」建立一個。'));
-        return send(text(`${who}請選擇撥款方向：`, allocQuickReply(pid, i, pk, p.get('o') || undefined)));
+        return send(fromPrompt(pid, i, it.entry, pk, who));
       }
       return send(text(`${who}請選擇分類：`, categoryQuickReply(pid, it.entry.type, i)));
+    }
+
+    if (a === 'from' || a === 'to' || (a === 'alloc' && !p.get('k'))) {
+      const g = await entryCall(env, pid, 'get');
+      if (!g.ok || g.rec.state !== 'pending') return send(text(stateMsg(g.ok ? g.rec.state : 'missing')));
+      const cur = g.rec.items[i]?.entry;
+      if (!cur) return;
+      const all = await getPockets(env, bind, fetchImpl);
+      const act = all.filter(x => x.active !== false);
+      if (!act.length) return send(text('你目前沒有任何口袋。先傳「新增口袋 旅遊基金」建立一個，再撥款。'));
+      const who = g.rec.items.length > 1 ? `第 ${i + 1} 筆` : '';
+      const ok = (id) => id === 'daily' || act.some(x => x.id === id);
+      if (a === 'alloc') {                              // 支出／收入「改成撥款」：先轉成撥款，再走兩步驟
+        const patch = { ...transferPatch('', (act.find(x => x.id === 'emergency') || act[0]).id, all), origClient: cur.type === 'alloc' ? cur.origClient : cur.client };
+        const r = await entryCall(env, pid, 'update', { i, patch });
+        if (!r.ok) return send(text(stateMsg(r.reason)));
+        return send(fromPrompt(pid, i, r.rec.items[i].entry, act, who));
+      }
+      const f = p.get('f') || '';
+      if (!ok(f)) return send(fromPrompt(pid, i, cur, act, who, '這個口袋已經不存在了，請重新選擇。'));
+      if (a === 'from') return send(toPrompt(pid, i, cur, act, f, who));
+      const t = p.get('t') || '';
+      if (!ok(t) || t === f) return send(toPrompt(pid, i, cur, act, f, who, '請選擇另一個口袋。'));
+      const r = await entryCall(env, pid, 'update', { i, patch: transferPatch(f, t, all) });
+      if (!r.ok) return send(text(stateMsg(r.reason)));
+      return send(cardFor(pid, r.rec.items, r.rec.ledgerName, all));
     }
 
     if (a === 'cat' || a === 'type' || a === 'alloc') {
@@ -341,6 +370,15 @@ export function parseMessage(msg, today) {
   return { entries, bad };
 }
 
+/** 撥款兩步驟的提示 */
+const allocHead = (e, who) => `${who ? who + '：' : ''}撥款 $${fmt(e.amount)}（${String(e.date).slice(5).replace('-', '/')}）`;
+const fromPrompt = (pid, i, e, pockets, who, note = '') =>
+  text(`${note ? note + '\n' : ''}${allocHead(e, who)}\n① 請選擇從哪個口袋轉出：`, transferFromQuickReply(pid, i, pockets));
+const toPrompt = (pid, i, e, pockets, from, who, note = '') => {
+  const fn = from === 'daily' ? '日常' : (pockets.find(x => x.id === from)?.name || from);
+  return text(`${note ? note + '\n' : ''}${allocHead(e, who)}\n從「${fn}」轉出\n② 請選擇轉入哪個口袋：`, transferToQuickReply(pid, i, pockets, from));
+};
+
 const cardFor = (pid, items, ledgerName, pockets) => (items.length > 1
   ? batchCard(pid, items.map(it => it.entry), ledgerName, pockets)
   : confirmCard(pid, items[0].entry, ledgerName, pockets));
@@ -369,11 +407,11 @@ async function confirmWrite(env, pid, uid, fetchImpl) {
     sheetPockets = pockets;
     const have = new Set(ids);
     const createdAt = new Date().toISOString();
-    const txns = items.filter(it => !have.has(it.txnId)).map(({ entry: e, txnId }) => ({
+    const txns = items.flatMap(({ entry: e, txnId }) => expandTransfer({
       id: txnId, type: e.type, category: e.category, date: e.date, amount: e.amount,
       client: e.client, description: '', paymentTerm: 0, received: true,
-      createdAt, account: e.account || '',
-    }));
+      createdAt, account: e.account || '', from: e.from || '',
+    })).filter(t => !have.has(t.id)).map(({ from, ...t }) => t);   // 口袋互轉拆成兩筆；已寫過的跳過
     await appendTxns(token, rec.sheetId, header, txns, fetchImpl, pockets);
     });
   } catch (err) {
@@ -398,7 +436,7 @@ async function confirmWrite(env, pid, uid, fetchImpl) {
   const line = (e) => {
     const sign = e.type === 'inflow' ? '+' : e.type === 'alloc' ? '' : '-';
     const label = e.type === 'alloc' ? '撥款' : e.client;
-    return { label, sign, cat: catLabel(e.type, e.category, e.account, sheetPockets || rec.pockets) };
+    return { label, sign, cat: catLabel(e.type, e.category, e.account, sheetPockets || rec.pockets, e.from) };
   };
   let body;
   if (items.length === 1) {

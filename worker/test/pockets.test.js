@@ -11,6 +11,13 @@ import { fakeKV, fakeEntryNS, fakeSheetsApi } from './helpers.js';
 import { HEADER_ZH } from '../src/zh.js';
 
 const T = '2026-10-12';
+/* 撥款兩步驟的快速選單 */
+const qrOf = (w) => w.last()[0].quickReply.items.map(x => x.action);
+const choose = async (w, tap, step, label) => {
+  const a = qrOf(w).find(x => x.data.includes(`a=${step}`) && x.label.includes(label));
+  assert.ok(a, `選單裡找不到「${label}」：${qrOf(w).map(x => x.label).join('、')}`);
+  await tap(a.data);
+};
 const book = () => ({
   '記帳明細': [HEADER_ZH,
     ['1', '收入', '主要薪資', '2026-10-05', 50000, '薪水', '', 0, '是', '', '日常'],
@@ -117,6 +124,7 @@ test('LINE：新增、撥款到自訂口袋、改名、設定目標、刪除需�
   await say('新增口袋 旅遊基金');
   assert.match(w.text(), /已新增口袋「✈️ 旅遊基金」/);
   await say('撥款 旅遊 2000');
+  await choose(w, tap, 'from', '日常'); await choose(w, tap, 'to', '旅遊基金');
   assert.match(JSON.stringify(w.last()), /👛 日常 → ✈️ 旅遊基金/);
   await confirm();
   assert.equal(w.sheets.S['記帳明細'].at(-1)[10], '旅遊基金');
@@ -129,10 +137,11 @@ test('LINE：新增、撥款到自訂口袋、改名、設定目標、刪除需�
   await say('日本旅遊目標 30000');
   assert.match(w.text(), /日本旅遊 \$2,000 \/ \$30,000\n　還差 \$28,000/);
 
-  // 改方向的選單列出自訂口袋
+  // 兩步驟的選單都列出自訂口袋
   await say('撥款 100');
-  await tap(`a=pick&p=${JSON.stringify(w.last()).match(/a=ok&p=(\w+)/)[1]}`);
-  assert.match(JSON.stringify(w.last()), /撥入日本旅遊/);
+  assert.ok(qrOf(w).some(x => x.label.includes('日本旅遊')));
+  await choose(w, tap, 'from', '日本旅遊');
+  assert.ok(qrOf(w).some(x => x.label.includes('日常')) && !qrOf(w).some(x => x.data.includes('a=to') && x.label.includes('日本旅遊')));
 
   // 刪除：先出確認卡，按「取消」不會動
   await say('刪除口袋 日本旅遊');
@@ -150,8 +159,8 @@ test('LINE：新增、撥款到自訂口袋、改名、設定目標、刪除需�
   assert.match(w.text(), /已經刪除了/);
   assert.equal(w.sheets.S['記帳明細'].filter(r => /刪除口袋/.test(r[5] || '')).length, 1);
 
-  await say('撥款 日本旅遊 100');                                               // 找不到 → 先選預設並提醒
-  assert.match(w.text(), /找不到「日本旅遊」這個口袋/);
+  await say('撥款 日本旅遊 100');                                               // 已刪除的口袋不會出現在選單
+  assert.ok(!qrOf(w).some(x => x.label.includes('日本旅遊')));
 
   // 刪光所有口袋：只剩日常，撥款會提示先建立口袋
   for (const n of ['儲蓄口袋', '緊急備用金']) {
@@ -182,15 +191,14 @@ test('LINE：在網站新增的口袋，LINE 撥款「改方向」選單立刻�
   };
 
   await say('餘額');                                         // LINE 端先有了口袋清單快取（只有兩個）
-  await say('撥款 3000');                                     // 卡片在新增口袋之前就建立
-  const pid = JSON.stringify(w.last()).match(/a=ok&p=(\w+)/)[1];
+  await say('撥款 3000');                                     // 選單在新增口袋之前就送出
+  await choose(w, tap, 'from', '日常');
   assert.equal((await web('addPocket', { name: '日用口袋' })).ok, true);
-  await tap(`a=pick&p=${pid}`);
-  const menu = JSON.stringify(w.last());
-  assert.match(menu, /撥入日用口袋/);
-  const k = (await web('load', {})).data.pockets.find(p => p.name === '日用口袋').id;
-  await tap(`a=alloc&p=${pid}&i=0&d=in&k=${k}`);
+  await say('撥款 3000');
+  await choose(w, tap, 'from', '日常');
+  await choose(w, tap, 'to', '日用口袋');
   assert.match(JSON.stringify(w.last()), /日常 → .{1,3} 日用口袋/);
+  const pid = JSON.stringify(w.last()).match(/a=ok&p=(\w+)/)[1];
   await tap(`a=ok&p=${pid}`);
   assert.equal(w.sheets.S['記帳明細'].at(-1)[10], '日用口袋');
 });
@@ -208,9 +216,7 @@ test('LINE：直接在試算表「口袋」分頁新增的口袋，下一則訊�
   await say('餘額');                                                          // 建立口袋分頁、記住清單
   w.sheets.S['口袋'].push(['pmanual', '日用口袋', '🧴', 0, '使用中', '']);       // 使用者直接在試算表加一列
   await say('撥款 日用 500');
+  assert.ok(qrOf(w).some(x => x.label === '🧴 日用口袋'));
+  await choose(w, tap, 'from', '日常'); await choose(w, tap, 'to', '日用口袋');
   assert.match(JSON.stringify(w.last()), /日常 → 🧴 日用口袋/);
-  assert.doesNotMatch(w.text(), /找不到/);
-  const pid = JSON.stringify(w.last()).match(/a=ok&p=(\w+)/)[1];
-  await tap(`a=pick&p=${pid}`);
-  assert.match(JSON.stringify(w.last()), /撥入日用口袋/);
 });
