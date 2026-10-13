@@ -345,7 +345,9 @@ export async function readLedger(token, sheetId, fetchImpl = fetch) {
   rows.forEach((r, idx) => {
     if (idx === 0 || !r.some(c => c !== '' && c != null)) return;
     const t = Object.fromEntries(keys.map((k, i) => [k, fromSheet(k, r[i] ?? '')]));
-    t.id = String(t.id ?? '');
+    t.id = String(t.id ?? '').trim();
+    // 手動輸入或舊資料沒有編號：給一個由「列號＋內容」算出的暫時編號，避免網站改錯列；寫入動作時會補進試算表
+    if (!t.id) { t.id = synthId(idx + 1, r); Object.defineProperty(t, '_synth', { value: true, enumerable: false, writable: true, configurable: true }); }
     t.date = normDate(t.date);
     t.amount = Number(String(t.amount).replace(/,/g, '')) || 0;
     t.account = String(t.account ?? '');
@@ -382,6 +384,23 @@ export async function readLedger(token, sheetId, fetchImpl = fetch) {
 }
 
 /** 交易某欄的 A1 位置與寫入值（依帳本是中文或英文） */
+/** 沒有編號的列：列號＋內容雜湊（同一份資料重讀結果相同；列被搬動或內容改了就對不上，寧可找不到也不改錯） */
+export function synthId(row, cells) {
+  let h = 0x811c9dc5;
+  for (const ch of JSON.stringify(cells)) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `m${row}x${h.toString(36)}`;
+}
+
+/** 把暫時編號正式寫進「編號」欄（呼叫端需持有寫入鎖） */
+export async function backfillIds(token, sheetId, d, fetchImpl = fetch) {
+  const ci = d.header.map(colKey).indexOf('id');
+  const miss = d.transactions.filter(t => t._synth);
+  if (ci < 0 || !miss.length) return 0;
+  await writeCells(token, sheetId, miss.map(t => ({ a1: `'${d.tabs.txn}'!${colName(ci)}${t._row}`, value: t.id })), fetchImpl);
+  for (const t of miss) t._synth = false;
+  return miss.length;
+}
+
 export function txnCell(d, key, row, value) {
   const ci = d.header.map(colKey).indexOf(key);
   if (ci < 0) return null;

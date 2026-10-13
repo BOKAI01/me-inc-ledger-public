@@ -176,7 +176,7 @@ const callApi = async (action, payload = {}, ms = 25000) => {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
     if (!json.ok && json.error === 'auth') { authLost(); throw Object.assign(new Error(json.message || '請重新登入'), { auth: true }); }
-    if (!json.ok) throw new Error(json.error || '未知錯誤');
+    if (!json.ok) throw Object.assign(new Error(json.error || '未知錯誤'), { server: true });   // 伺服器明確拒絕：重送也不會成功
     return json.data;
   } finally { clearTimeout(timer); }
 };
@@ -229,13 +229,13 @@ const flushQueue = () => {
   flushing = (async () => {
     const q = getQueue();
     if (!q.length) return { synced: 0, failed: 0 };
-    const rest = []; let synced = 0;
+    const rest = [], dropped = []; let synced = 0;
     for (const op of q) {
       try { await api(op.action, op.payload); synced++; }
-      catch (e) { rest.push(op); }
+      catch (e) { if (!e.server) rest.push(op); else dropped.push(e.message); }   // 只有網路問題才保留重送
     }
     setQueue(rest);
-    return { synced, failed: rest.length };
+    return { synced, failed: rest.length, dropped };
   })().finally(() => { flushing = null; });
   return flushing;
 };
@@ -928,7 +928,8 @@ function App() {
         if (isOnline() && getQueue().length) {
           bootReq = null;                       // 有待送出的異動，預抓結果已過期
           const r = await flushQueue();
-          if (r.synced) showToast(`已同步 ${r.synced} 筆離線記錄`);
+          if (r.dropped?.length) showToast(`有 ${r.dropped.length} 筆異動無法套用：${r.dropped[0]}`, 'error');
+          else if (r.synced) showToast(`已同步 ${r.synced} 筆離線記錄`);
         }
         let data = null, lastErr = null;
         for (let attempt = 0; attempt < 2; attempt++) {
@@ -1096,9 +1097,14 @@ function App() {
       : { action: 'addTxn', payload: { txn: tx } };
     try {
       if (!isOnline()) throw new Error('offline');
-      await api(op.action, op.payload);
+      const r = await api(op.action, op.payload);
+      if (r && r.missing) {                  // 試算表裡找不到原本那一列（例如在試算表手動改過），不寫入任何資料
+        showToast('找不到原本那筆紀錄，可能已在試算表修改過，已重新整理', 'error');
+        bootReq = null; reload(); return;
+      }
       showToast('已同步到 Google Sheet');
     } catch (e) {
+      if (e.server || e.auth) { showToast(e.message, 'error'); bootReq = null; setSyncing(false); reload(); return; }   // 伺服器拒絕：不放進離線佇列
       queueOp(op);
       showToast(isOnline() ? '暫存到佇列，稍後自動重送' : '離線儲存，連線後自動同步', 'info');
     } finally { setSyncing(false); }
@@ -1111,8 +1117,11 @@ function App() {
     setSyncing(true);
     try {
       if (!isOnline()) throw new Error('offline');
-      await api('deleteTxn', { id }); showToast('已刪除');
+      const r = await api('deleteTxn', { id });
+      if (r && r.missing) { showToast('找不到這筆紀錄，已重新整理', 'error'); bootReq = null; reload(); return; }
+      showToast('已刪除');
     } catch (e) {
+      if (e.server || e.auth) { showToast(e.message, 'error'); bootReq = null; setSyncing(false); reload(); return; }   // 伺服器拒絕：不放進離線佇列
       queueOp({ action: 'deleteTxn', payload: { id } });
       showToast('離線刪除，連線後同步', 'info');
     } finally { setSyncing(false); }

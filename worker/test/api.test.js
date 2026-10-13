@@ -101,7 +101,7 @@ test('api: 同時新增多筆不會遺失或重複', async () => {
   assert.equal(s.sh.S.Transactions.length, 6);
 });
 
-test('api: updateTxn 只改指定欄位；找不到也回成功', async () => {
+test('api: updateTxn 只改指定欄位；找不到要回報錯誤', async () => {
   const s = setup([row('1'), row('2')]);
   const r = await s.call('updateTxn', { id: '2', fields: { amount: 999, client: '晚餐', date: '2026-10-06', account: 'savings' } });
   assert.equal(r.ok, true);
@@ -109,7 +109,8 @@ test('api: updateTxn 只改指定欄位；找不到也回成功', async () => {
   assert.equal(t[4], 999); assert.equal(t[5], '晚餐'); assert.equal(t[3], '2026-10-06'); assert.equal(t[10], '儲蓄口袋');
   assert.equal(t[9], '2026-10-07T01:00:00.000Z');   // 其他欄位不動
   assert.equal(s.sh.S.Transactions[1][4], 100);
-  assert.equal((await s.call('updateTxn', { id: 'nope', fields: { amount: 1 } })).ok, true);
+  const miss = await s.call('updateTxn', { id: 'nope', fields: { amount: 1 } });
+  assert.equal(miss.ok, false); assert.match(miss.error, /找不到這筆紀錄/);
 });
 
 test('api: deleteTxn 刪正確的列；同 id 多列只刪一列', async () => {
@@ -119,7 +120,7 @@ test('api: deleteTxn 刪正確的列；同 id 多列只刪一列', async () => {
   assert.equal(s.sh.S.Transactions[2][9], '2026-10-07T01:00:00.000Z');   // 保留較早那列
   await s.call('deleteTxn', { id: '1' });
   assert.deepEqual(s.sh.S.Transactions.slice(1).map(r => r[0]), ['2', '3']);
-  assert.equal((await s.call('deleteTxn', { id: 'nope' })).ok, true);
+  assert.equal((await s.call('deleteTxn', { id: 'nope' })).ok, false);
 });
 
 test('api: setSetting / setOpening', async () => {
@@ -144,4 +145,21 @@ test('api: scanDuplicates', () => {
   assert.equal(byId.items.length, 2); assert.equal(byId.items[0].createdAt, '2026-10-06T09:00:00Z');
   const byC = g.find(x => x.reason === 'content');
   assert.deepEqual(byC.items.map(i => i.id).sort(), ['a', 'b']);
+});
+
+test('api: 沒有編號的舊資料（手動輸入）也能修改、刪除；載入時補上編號，列位移動也不會失效', async () => {
+  const old = (o) => row('', { createdAt: '', ...o });
+  const s = setup([old({ amount: 11 }), old({ amount: 22 }), old({ type: 'inflow', category: 'salary', amount: 46529, client: '薪水' }), row('x1', { amount: 33 })]);
+  const L = (await s.call('load')).data.transactions;
+  const ids = s.sh.S.Transactions.slice(1).map(r => r[0]);
+  assert.ok(ids.every(Boolean));                                             // 載入時已把編號寫進試算表
+  assert.deepEqual(L.map(t => t.id), ids);
+  // 先刪掉上面一列（後面的列往上移），再用網站手上的編號修改薪水那筆
+  assert.equal((await s.call('deleteTxn', { id: L[1].id })).ok, true);
+  const sal = L.find(t => t.amount === 46529);
+  const r = await s.call('updateTxn', { id: sal.id, fields: { amount: 46000 } });
+  assert.equal(r.ok, true);
+  const rows = s.sh.S.Transactions.slice(1);
+  assert.deepEqual(rows.map(x => x[4]), [11, 46000, 33]);                   // 改到原本那筆，沒有多出一筆
+  assert.equal((await s.call('load')).data.transactions.length, 3);
 });

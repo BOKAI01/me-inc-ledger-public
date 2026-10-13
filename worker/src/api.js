@@ -7,7 +7,7 @@
  */
 import { tokenFor } from './oauth.js';
 import {
-  readLedger, appendTxns, writeCells, deleteRow, txnCell, setSetting,
+  readLedger, appendTxns, writeCells, deleteRow, txnCell, setSetting, backfillIds,
 } from './google.js';
 import { withSheetLock } from './entry.js';
 import { addPocket, renamePocket, setPocketTarget, deletePocket, PocketError } from './pocket-ops.js';
@@ -99,7 +99,18 @@ async function runAction(p, bind, env, fetchImpl) {
   const token = await tokenFor(env, bind, fetchImpl);
   switch (p.action) {
     case 'load': {
-      const d = await readLedger(token, sheetId, fetchImpl);
+      let d = await readLedger(token, sheetId, fetchImpl);
+      // 舊資料（手動輸入、舊系統寫入）沒有編號：第一次載入時就把編號寫進試算表，
+      // 之後刪除、插入列都不會讓網站拿到的編號失效
+      if (d.transactions.some(t => t._synth)) {
+        try {
+          d = await withLock(env, sheetId, async () => {
+            const fresh = await readLedger(token, sheetId, fetchImpl);
+            await backfillIds(token, sheetId, fresh, fetchImpl);
+            return fresh;
+          });
+        } catch (err) { console.error('backfill ids on load failed', sheetId, err); }
+      }
       const out = { transactions: d.transactions, openingBalance: d.openingBalance, cycleDay: d.cycleDay, fundTarget: d.fundTarget, savingsTarget: d.savingsTarget,
         pockets: d.pockets.map(({ row, ...x }) => x) };
       for (const [k, v] of Object.entries(d.settings)) if (k.startsWith('openingBalance_')) out[k] = Number(v) || 0;
@@ -114,6 +125,7 @@ async function runAction(p, bind, env, fetchImpl) {
         const t = p.txn || {};
         if (!t.id) throw new Error('缺少 id');
         const d = await readLedger(token, sheetId, fetchImpl);
+        await backfillIds(token, sheetId, d, fetchImpl);
         const dup = findDuplicate(d.transactions, t);
         if (dup) return { id: dup.id, duplicate: true };
         await appendTxns(token, sheetId, d.header, [{
@@ -126,9 +138,14 @@ async function runAction(p, bind, env, fetchImpl) {
       });
     case 'updateTxn':
       return withLock(env, sheetId, async () => {
+        if (!String(p.id ?? '').trim()) throw new Error('這筆紀錄沒有編號，請重新整理網頁後再修改');
         const d = await readLedger(token, sheetId, fetchImpl);
-        const row = d.transactions.find(t => t.id === String(p.id));
-        if (!row) return { id: p.id, missing: true };            // 找不到也回成功，避免離線佇列卡住
+        const hits = d.transactions.filter(t => t.id === String(p.id));
+        // 找不到或不只一列：不動任何資料，並明確告訴網站（不能假裝成功）
+        if (hits.length > 1) throw new Error('有多筆紀錄使用同一個編號，請到「設定 → 檢查重複記錄」處理後再修改');
+        if (!hits.length) throw new Error('找不到這筆紀錄，可能已在其他地方修改或刪除，請重新整理後再試');
+        const row = hits[0];
+        await backfillIds(token, sheetId, d, fetchImpl);
         const fields = p.fields || {};
         const cells = [];
         for (const [k, v] of Object.entries(fields)) {
@@ -142,9 +159,11 @@ async function runAction(p, bind, env, fetchImpl) {
       });
     case 'deleteTxn':
       return withLock(env, sheetId, async () => {
+        if (!String(p.id ?? '').trim()) throw new Error('這筆紀錄沒有編號，請重新整理網頁後再刪除');
         const d = await readLedger(token, sheetId, fetchImpl);
         const rows = d.transactions.filter(t => t.id === String(p.id));
-        if (!rows.length) return { id: p.id, missing: true };
+        if (!rows.length) throw new Error('找不到這筆紀錄，可能已經刪除或被修改，請重新整理後再試');
+        await backfillIds(token, sheetId, d, fetchImpl);
         await deleteRow(token, sheetId, d.tabs.txn, rows[rows.length - 1]._row, fetchImpl);   // 同 id 多列時刪最後一列
         return { id: p.id };
       });
