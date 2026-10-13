@@ -3,9 +3,10 @@
  *   GET  /health        → ok
  *   POST /line/webhook  → LINE Messaging API webhook
  */
+import { rememberPockets, cachedPockets, lite } from './pocket-cache.js';
 import { verifySignature, reply, text, confirmCard, batchCard, categoryQuickReply, allocQuickReply } from './line.js';
 import { parseEntry, parseDateOnly, guessCategory, allocEntry } from './parse.js';
-import { readHeaderAndIds, readLedger, appendTxns, setSetting, GoogleAuthError, SheetAccessError } from './google.js';
+import { readHeaderAndIds, readLedger, readPockets, appendTxns, setSetting, GoogleAuthError, SheetAccessError } from './google.js';
 import { tokenFor, AuthRevokedError, needsRelink, bindKey, tokKey, obKey, authLink, handleAuthStart, handleAuthCallback, handleFinish, handleRelink, privacyPage, page } from './oauth.js';
 import { computePockets, computeSummary, taipeiToday, catLabel, fmt } from './ledger.js';
 import { Entry, entryCall, withSheetLock } from './entry.js';
@@ -289,7 +290,8 @@ export async function handleEvent(ev, env, deps = {}) {
       if (!it) return;
       const who = r.rec.items.length > 1 ? `第 ${i + 1} 筆「${it.entry.client}」` : '';
       if (it.entry.type === 'alloc') {
-        const pk = (r.rec.pockets || await getPockets(env, bind, fetchImpl)).filter(x => x.active !== false);
+        const pk = (await getPockets(env, bind, fetchImpl)).filter(x => x.active !== false);   // 用最新清單，卡片建立後才新增的口袋也選得到
+        if (!pk.length) return send(text('你目前沒有任何口袋。先傳「新增口袋 旅遊基金」建立一個。'));
         return send(text(`${who}請選擇撥款方向：`, allocQuickReply(pid, i, pk, p.get('o') || undefined)));
       }
       return send(text(`${who}請選擇分類：`, categoryQuickReply(pid, it.entry.type, i)));
@@ -306,18 +308,19 @@ export async function handleEvent(ev, env, deps = {}) {
         patch = { category: p.get('c') };
       } else if (a === 'alloc') {
         const d = p.get('d') === 'out' ? 'out' : 'in';
-        const pk = (g.rec.pockets || await getPockets(env, bind, fetchImpl)).filter(x => x.active !== false);
+        const all = await getPockets(env, bind, fetchImpl);
+        const pk = all.filter(x => x.active !== false);
         if (!pk.length) return send(text('你目前沒有任何口袋。先傳「新增口袋 旅遊基金」建立一個。'));
         const k = (pk.find(x => x.id === p.get('k')) || pk.find(x => x.id === 'emergency') || pk[0]).id;
         patch = { ...allocEntry(d, k, pk), origClient: cur.type === 'alloc' ? cur.origClient : cur.client };
-        if (!g.rec.pockets) pockets4card = pk;
+        pockets4card = all;
       } else {
         const t = p.get('t') === 'inflow' ? 'inflow' : 'outflow';
         patch = { type: t, client: origClient, account: '', category: guessCategory(origClient, t) };
       }
       const r = await entryCall(env, pid, 'update', { i, patch });
       if (!r.ok) return send(text(stateMsg(r.reason)));
-      return send(cardFor(pid, r.rec.items, r.rec.ledgerName, r.rec.pockets || pockets4card));
+      return send(cardFor(pid, r.rec.items, r.rec.ledgerName, pockets4card || r.rec.pockets));
     }
   }
 }
@@ -357,11 +360,13 @@ async function confirmWrite(env, pid, uid, fetchImpl) {
   const rec = r.rec;
   if (rec.uid !== uid) { await entryCall(env, pid, 'release'); return { msg: '這張卡片不是你的。' }; }
   const items = rec.items;
+  let sheetPockets = null;
 
   try {
     const token = await tokenFor(env, rec.ledger || { sheetId: rec.sheetId }, fetchImpl);
     await withSheetLock(env, rec.sheetId, async () => {
     const { header, ids, pockets } = await readHeaderAndIds(token, rec.sheetId, fetchImpl);
+    sheetPockets = pockets;
     const have = new Set(ids);
     const createdAt = new Date().toISOString();
     const txns = items.filter(it => !have.has(it.txnId)).map(({ entry: e, txnId }) => ({
@@ -393,7 +398,7 @@ async function confirmWrite(env, pid, uid, fetchImpl) {
   const line = (e) => {
     const sign = e.type === 'inflow' ? '+' : e.type === 'alloc' ? '' : '-';
     const label = e.type === 'alloc' ? '撥款' : e.client;
-    return { label, sign, cat: catLabel(e.type, e.category, e.account, rec.pockets) };
+    return { label, sign, cat: catLabel(e.type, e.category, e.account, sheetPockets || rec.pockets) };
   };
   let body;
   if (items.length === 1) {
@@ -448,16 +453,18 @@ async function loadLedger(env, bind, fetchImpl) {
 }
 
 /* ---------- 口袋：清單快取在 KV（撥款時不用每次讀帳本），來源以帳本「口袋」工作表為準 ---------- */
-const pkKey = (sheetId) => `pk:${sheetId}`;
-const lite = (pockets) => pockets.map(({ id, name, icon, active, target }) => ({ id, name, icon, active, target }));
-async function rememberPockets(env, sheetId, pockets) {
-  const v = JSON.stringify(lite(pockets || []));
-  if ((await env.KV.get(pkKey(sheetId))) !== v) await env.KV.put(pkKey(sheetId), v, { expirationTtl: 30 * 86400 });
-}
 async function getPockets(env, bind, fetchImpl) {
-  const c = await env.KV.get(pkKey(bind.sheetId), 'json');
-  if (Array.isArray(c)) return c;
-  return lite((await loadLedger(env, bind, fetchImpl)).pockets);
+  // 每次都讀試算表上的最新口袋清單；Google 暫時連不上時才退回上次記住的清單
+  try {
+    const token = await tokenFor(env, bind, fetchImpl);
+    const pk = await readPockets(token, bind.sheetId, fetchImpl);
+    await rememberPockets(env, bind.sheetId, pk).catch(() => {});
+    return lite(pk);
+  } catch (err) {
+    const c = await cachedPockets(env, bind.sheetId);
+    if (c) return c;
+    throw err;
+  }
 }
 async function pocketOp(env, bind, fetchImpl, fn) {
   const token = await tokenFor(env, bind, fetchImpl);

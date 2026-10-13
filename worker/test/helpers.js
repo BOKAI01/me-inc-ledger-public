@@ -79,6 +79,9 @@ export function fakeWorld({ rows = [], settings = { openingBalance: 0, cycleDay:
       const setRows = () => [['key', 'value'], ...Object.entries(settings).map(([k, v]) => [k, v])];
       if (u.includes('/values/') && !u.includes(':append')) {           // 讀最後一列（values.get）
         if (decodeURIComponent(u).includes("'Settings'")) return Response.json({ values: setRows() });
+        if (decodeURIComponent(u).includes("'口袋'")) {                   // 只讀口袋分頁
+          return w.pk ? Response.json({ values: w.pk }) : Response.json({ error: { message: 'Unable to parse range' } }, { status: 400 });
+        }
         return Response.json({ values: [HEADER, ...w.rows].map(r => r.slice(0, 6)) });
       }
       if (u.includes('/values:batchUpdate')) {                            // 寫入指定列

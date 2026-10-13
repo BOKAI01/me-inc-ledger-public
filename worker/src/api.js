@@ -5,6 +5,7 @@
  * 回應：{ ok: true, data } 或 { ok: false, error }
  * 金鑰對應：KV  api:<key> → {"sheetId":"...","ledgerName":"主帳本"}
  */
+import { rememberPockets } from './pocket-cache.js';
 import { tokenFor } from './oauth.js';
 import {
   readLedger, appendTxns, writeCells, deleteRow, txnCell, setSetting, backfillIds,
@@ -111,6 +112,7 @@ async function runAction(p, bind, env, fetchImpl) {
           });
         } catch (err) { console.error('backfill ids on load failed', sheetId, err); }
       }
+      await rememberPockets(env, sheetId, d.pockets).catch(() => {});      // 開網站時順便更新 LINE 端的口袋清單
       const out = { transactions: d.transactions, openingBalance: d.openingBalance, cycleDay: d.cycleDay, fundTarget: d.fundTarget, savingsTarget: d.savingsTarget,
         pockets: d.pockets.map(({ row, ...x }) => x) };
       for (const [k, v] of Object.entries(d.settings)) if (k.startsWith('openingBalance_')) out[k] = Number(v) || 0;
@@ -177,7 +179,8 @@ async function runAction(p, bind, env, fetchImpl) {
       if (/Target$/.test(k) && v < 0) throw new Error('目標金額不能是負數');
       return withLock(env, sheetId, async () => {
         if (k === 'fundTarget' || k === 'savingsTarget') {             // 目標金額現在存在「口袋」工作表
-          await setPocketTarget(token, sheetId, k === 'fundTarget' ? 'emergency' : 'savings', v, fetchImpl);
+          const r = await setPocketTarget(token, sheetId, k === 'fundTarget' ? 'emergency' : 'savings', v, fetchImpl);
+          await rememberPockets(env, sheetId, r.pockets).catch(() => {});
           return { key: k, value: v };
         }
         const d = await readLedger(token, sheetId, fetchImpl);
@@ -191,10 +194,12 @@ async function runAction(p, bind, env, fetchImpl) {
     case 'deletePocket':
       return withLock(env, sheetId, async () => {
         try {
-          if (p.action === 'addPocket') return (await addPocket(token, sheetId, p.name, { icon: p.icon, target: p.target }, fetchImpl)).pocket;
-          if (p.action === 'renamePocket') return (await renamePocket(token, sheetId, p.id, p.name, fetchImpl)).pocket;
-          if (p.action === 'setPocketTarget') return (await setPocketTarget(token, sheetId, p.id, p.target, fetchImpl)).pocket;
-          const r = await deletePocket(token, sheetId, p.id, { today: taipeiToday(), txnId: p.txnId }, fetchImpl);
+          // 每個動作完成後同步 LINE 端的口袋快取，LINE 撥款選單才會立刻看到
+          const sync = async (r) => { await rememberPockets(env, sheetId, r.pockets).catch(() => {}); return r; };
+          if (p.action === 'addPocket') return (await sync(await addPocket(token, sheetId, p.name, { icon: p.icon, target: p.target }, fetchImpl))).pocket;
+          if (p.action === 'renamePocket') return (await sync(await renamePocket(token, sheetId, p.id, p.name, fetchImpl))).pocket;
+          if (p.action === 'setPocketTarget') return (await sync(await setPocketTarget(token, sheetId, p.id, p.target, fetchImpl))).pocket;
+          const r = await sync(await deletePocket(token, sheetId, p.id, { today: taipeiToday(), txnId: p.txnId }, fetchImpl));
           return { id: r.pocket.id, balance: r.balance, wrote: r.wrote };
         } catch (err) {
           if (err instanceof PocketError) throw new Error(err.message);

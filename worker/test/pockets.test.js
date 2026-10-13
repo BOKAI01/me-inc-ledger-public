@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleEvent } from '../src/index.js';
+import { handleApi } from '../src/api.js';
 import { findPocket, accountFromSheet, nameError, defaultPockets, MAX_POCKETS } from '../src/pockets.js';
 import { computePockets } from '../src/ledger.js';
 import { readLedger, resetSheetCaches } from '../src/google.js';
@@ -161,4 +162,55 @@ test('LINE：新增、撥款到自訂口袋、改名、設定目標、刪除需�
   assert.match(w.text(), /目前沒有其他口袋/);
   await say('撥款 500');
   assert.match(w.text(), /你目前沒有任何口袋/);
+});
+
+test('LINE：在網站新增的口袋，LINE 撥款「改方向」選單立刻看得到', async () => {
+  const U = 'Upocket0000000000000000000000002';
+  const w = setup();
+  const E = { TOKEN_ENC_KEY: b64u(new Uint8Array(32).fill(3)), GOOGLE_CLIENT_ID: 'c', GOOGLE_CLIENT_SECRET: 's', LINE_CHANNEL_SECRET: 's', LINE_CHANNEL_ACCESS_TOKEN: 't', KV: fakeKV(), ENTRY: fakeEntryNS(), LEGACY_KEY_UNTIL: '2099-01-01' };
+  const bind = { sheetId: 'S', auth: 'oauth', tok: `tok:${U}`, ledgerName: '我的帳本' };
+  E.KV.m.set(`tok:${U}`, await encryptText(E, 'RT'));
+  E.KV.m.set(`bind:${U}`, JSON.stringify(bind));
+  E.KV.m.set('api:k_pocket_web_key_000000', JSON.stringify(bind));
+  const deps = { ch: '', base: 'https://bot.test', fetch: w.fetch, today: T };
+  const say = (t) => handleEvent({ type: 'message', replyToken: 'r', source: { userId: U }, message: { type: 'text', text: t } }, E, deps);
+  const tap = (d) => handleEvent({ type: 'postback', replyToken: 'r', source: { userId: U }, postback: { data: d } }, E, deps);
+  const web = async (action, payload) => {
+    const fd = new FormData(); fd.append('payload', JSON.stringify({ action, ...payload }));
+    const res = await handleApi(new Request('https://w/api?key=k_pocket_web_key_000000', { method: 'POST', body: fd }), E, { waitUntil() {} }, { fetch: w.fetch });
+    return res.json();
+  };
+
+  await say('餘額');                                         // LINE 端先有了口袋清單快取（只有兩個）
+  await say('撥款 3000');                                     // 卡片在新增口袋之前就建立
+  const pid = JSON.stringify(w.last()).match(/a=ok&p=(\w+)/)[1];
+  assert.equal((await web('addPocket', { name: '日用口袋' })).ok, true);
+  await tap(`a=pick&p=${pid}`);
+  const menu = JSON.stringify(w.last());
+  assert.match(menu, /撥入日用口袋/);
+  const k = (await web('load', {})).data.pockets.find(p => p.name === '日用口袋').id;
+  await tap(`a=alloc&p=${pid}&i=0&d=in&k=${k}`);
+  assert.match(JSON.stringify(w.last()), /日常 → .{1,3} 日用口袋/);
+  await tap(`a=ok&p=${pid}`);
+  assert.equal(w.sheets.S['記帳明細'].at(-1)[10], '日用口袋');
+});
+
+test('LINE：直接在試算表「口袋」分頁新增的口袋，下一則訊息就能撥款', async () => {
+  const U = 'Upocket0000000000000000000000003';
+  const w = setup();
+  const E = { TOKEN_ENC_KEY: b64u(new Uint8Array(32).fill(3)), GOOGLE_CLIENT_ID: 'c', GOOGLE_CLIENT_SECRET: 's', LINE_CHANNEL_SECRET: 's', LINE_CHANNEL_ACCESS_TOKEN: 't', KV: fakeKV(), ENTRY: fakeEntryNS() };
+  E.KV.m.set(`tok:${U}`, await encryptText(E, 'RT'));
+  E.KV.m.set(`bind:${U}`, JSON.stringify({ sheetId: 'S', auth: 'oauth', tok: `tok:${U}`, ledgerName: '我的帳本' }));
+  const deps = { ch: '', base: 'https://bot.test', fetch: w.fetch, today: T };
+  const say = (t) => handleEvent({ type: 'message', replyToken: 'r', source: { userId: U }, message: { type: 'text', text: t } }, E, deps);
+  const tap = (d) => handleEvent({ type: 'postback', replyToken: 'r', source: { userId: U }, postback: { data: d } }, E, deps);
+
+  await say('餘額');                                                          // 建立口袋分頁、記住清單
+  w.sheets.S['口袋'].push(['pmanual', '日用口袋', '🧴', 0, '使用中', '']);       // 使用者直接在試算表加一列
+  await say('撥款 日用 500');
+  assert.match(JSON.stringify(w.last()), /日常 → 🧴 日用口袋/);
+  assert.doesNotMatch(w.text(), /找不到/);
+  const pid = JSON.stringify(w.last()).match(/a=ok&p=(\w+)/)[1];
+  await tap(`a=pick&p=${pid}`);
+  assert.match(JSON.stringify(w.last()), /撥入日用口袋/);
 });

@@ -391,6 +391,20 @@ export function synthId(row, cells) {
   return `m${row}x${h.toString(36)}`;
 }
 
+/**
+ * 只讀「口袋」分頁（一次小範圍讀取），給 LINE 撥款用：每次都拿試算表上的最新清單，
+ * 不論口袋是在 LINE、網站或直接在試算表改的，下一則訊息就看得到。
+ * 還沒有口袋分頁的舊帳本 → 讀整本帳本（會自動建立分頁並帶入預設口袋）。
+ */
+export async function readPockets(token, sheetId, fetchImpl = fetch) {
+  try {
+    const j = await sheetsFetch(token, `/${sheetId}/values/${rngIn(POCKET_TAB, 'A1:F30')}?valueRenderOption=UNFORMATTED_VALUE`, {}, fetchImpl);
+    const rows = j.values || [];
+    if (rows.length) return parsePocketRows(rows).map(({ row, ...x }) => x);
+  } catch (err) { /* 沒有口袋分頁：改讀整本帳本 */ }
+  return (await readLedger(token, sheetId, fetchImpl)).pockets.map(({ row, ...x }) => x);
+}
+
 /** 把暫時編號正式寫進「編號」欄（呼叫端需持有寫入鎖） */
 export async function backfillIds(token, sheetId, d, fetchImpl = fetch) {
   const ci = d.header.map(colKey).indexOf('id');
