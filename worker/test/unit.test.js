@@ -129,3 +129,16 @@ test('ledger: 撥款口袋欄空白或填日常時，由品項判斷口袋', () 
   assert.equal(p.emergency, 3500);
   assert.equal(p.total, 10000);
 });
+
+test('新分類：醫療、貸款、保險、代墊費用自動判斷，試算表中英對照可逆', async () => {
+  const { guessCategory } = await import('../src/parse.js');
+  const { toSheet, fromSheet } = await import('../src/zh.js');
+  const { DEPARTMENTS, findDept } = await import('../src/ledger.js');
+  const cases = { 看牙醫: 'medical', 掛號費: 'medical', 藥局: 'medical', 國泰貸款: 'loan', 車貸: 'loan', 機車保險: 'insurance', 保費: 'insurance',
+    代墊公司濾心: 'advance', '濾心(代墊公司費用)': 'advance', 紅包: 'other_out', 卡費: 'other_out', 午餐: 'food', 機車保養: 'transport' };
+  for (const [k, v] of Object.entries(cases)) assert.equal(guessCategory(k, 'outflow'), v, k);
+  for (const d of DEPARTMENTS) assert.equal(fromSheet('category', toSheet('category', d.id)), d.id, d.id);
+  assert.equal(fromSheet('category', '醫療'), 'medical');
+  assert.equal(findDept('nope').id, 'other_out');
+  assert.ok(DEPARTMENTS.length + 2 <= 13);                // LINE「改分類」快速選單最多 13 個按鈕
+});

@@ -33,7 +33,7 @@ function setup(rows, settings) {
   resetSheetCaches();
   const sh = fakeSheets(rows, settings);
   const env = {
-    GOOGLE_SA_JSON: SA, LEGACY_GAS_URL: 'https://gas.test/exec',
+    GOOGLE_SA_JSON: SA, LEGACY_GAS_URL: 'https://gas.test/exec', LEGACY_KEY_UNTIL: '2099-01-01',
     KV: fakeKV({ [`api:${KEY}`]: JSON.stringify({ sheetId: 'SHEET' }) }),
     ENTRY: fakeEntryNS(),
   };

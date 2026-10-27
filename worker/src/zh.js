@@ -45,6 +45,7 @@ const TYPE_R = reverse(TYPE, { 支出: 'outflow', 收入: 'inflow', 撥款: 'all
 const CAT_R = reverse(CAT, {
   ...Object.fromEntries(DEPARTMENTS.map(d => [d.name, d.id])),          // 「食」「衣」…
   餐飲: 'food', 交通: 'transport', 居家: 'housing', 娛樂: 'leisure', 其他支出: 'other_out', 薪資: 'salary',
+  醫藥: 'medical', 保健: 'medical', 代墊費用: 'advance', 保費: 'insurance',
 });
 /* 口袋欄：只認「日常」與舊英文代號；其他名稱原樣交給 pockets.accountFromSheet 依「口袋」工作表對應
    （口袋可以改名、刪掉後再用同名新增，不能在這裡把「儲蓄口袋」寫死成 savings） */

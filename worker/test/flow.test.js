@@ -78,7 +78,7 @@ test('改分類、改成收入，並記住選擇', async () => {
   await s.say('咖啡豆 450');
   let pid = s.pidOf(s.lastCard());
   await s.tap(`a=pick&p=${pid}`);
-  assert.equal(s.world.replies.at(-1).messages[0].quickReply.items.length, 8);
+  assert.equal(s.world.replies.at(-1).messages[0].quickReply.items.length, 12);
   await s.tap(`a=cat&p=${pid}&c=leisure`);
   await s.tap(`a=ok&p=${pid}`);
   assert.equal(s.world.rows[0][2], 'leisure');

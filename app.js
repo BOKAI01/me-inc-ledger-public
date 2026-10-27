@@ -28,7 +28,11 @@ const DEPARTMENTS = [
   { id: 'housing',   name: '住',   fullName: '住 · 後勤部',   emoji: '🏠', color: '#1F3A2E', desc: '房租、水電、網路、家具、日用品' },
   { id: 'transport', name: '行',   fullName: '行 · 移動部',   emoji: '🚗', color: '#5B8C5A', desc: '大眾運輸、油錢、計程車、停車、保養' },
   { id: 'leisure',   name: '娛',   fullName: '娛 · 文化部',   emoji: '🎬', color: '#7A5A9F', desc: '訂閱、電影、旅遊、運動、興趣' },
-  { id: 'other_out', name: '其他', fullName: '其他 · 雜項部', emoji: '📂', color: '#888888', desc: '貸款、卡費、醫療、人情禮金、稅務' },
+  { id: 'medical',   name: '醫療', fullName: '醫療 · 保健部', emoji: '🏥', color: '#C0504D', desc: '看診、掛號、藥品、牙醫、健檢' },
+  { id: 'loan',      name: '貸款', fullName: '貸款 · 財務部', emoji: '💸', color: '#4A5A8C', desc: '房貸、車貸、信貸、學貸、分期付款' },
+  { id: 'insurance', name: '保險', fullName: '保險 · 保障部', emoji: '🛡️', color: '#2F7D74', desc: '壽險、醫療險、產險、健保費、勞保' },
+  { id: 'advance',   name: '代墊', fullName: '代墊費用 · 待收部', emoji: '🧾', color: '#B5862F', desc: '先幫公司或別人付、之後會拿回來的錢' },
+  { id: 'other_out', name: '其他', fullName: '其他 · 雜項部', emoji: '📂', color: '#888888', desc: '人情禮金、稅務、罰單、捐款' },
 ];
 
 /* 口袋：同一個帳戶內的資金分配，不是多個帳戶。
@@ -96,7 +100,7 @@ function classify(tx) {
 
 const defaultReserve = () => (RESERVES.find(p => p.id === 'emergency') || RESERVES[0] || { id: 'emergency' }).id;
 
-const findDept   = (id) => DEPARTMENTS.find(d => d.id === id) || DEPARTMENTS[5];
+const findDept   = (id) => DEPARTMENTS.find(d => d.id === id) || DEPARTMENTS.find(d => d.id === 'other_out');
 const findIncome = (id) => INCOME_CATS.find(c => c.id === id) || INCOME_CATS[4];
 
 /* ---------- 格式 ---------- */

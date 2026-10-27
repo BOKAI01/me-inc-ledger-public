@@ -14,10 +14,14 @@ export const DEPARTMENTS = [
   { id: 'housing',   name: '住',   fullName: '住 · 後勤部',   emoji: '🏠' },
   { id: 'transport', name: '行',   fullName: '行 · 移動部',   emoji: '🚗' },
   { id: 'leisure',   name: '娛',   fullName: '娛 · 文化部',   emoji: '🎬' },
+  { id: 'medical',   name: '醫療', fullName: '醫療 · 保健部', emoji: '🏥' },
+  { id: 'loan',      name: '貸款', fullName: '貸款 · 財務部', emoji: '💸' },
+  { id: 'insurance', name: '保險', fullName: '保險 · 保障部', emoji: '🛡️' },
+  { id: 'advance',   name: '代墊', fullName: '代墊費用 · 待收部', emoji: '🧾' },
   { id: 'other_out', name: '其他', fullName: '其他 · 雜項部', emoji: '📂' },
 ];
 
-export const findDept = (id) => DEPARTMENTS.find(d => d.id === id) || DEPARTMENTS[5];
+export const findDept = (id) => DEPARTMENTS.find(d => d.id === id) || DEPARTMENTS.find(d => d.id === 'other_out');
 export const findIncome = (id) => INCOME_CATS.find(c => c.id === id) || INCOME_CATS[4];
 import { DEFAULT_POCKETS, pocketById, findPocket } from './pockets.js';
 

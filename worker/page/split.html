@@ -106,7 +106,7 @@ function ymd(d) { return String(d || '').replace(/-/g, '/'); }
 function nm(id) { var m = V.members.filter(function (x) { return x.id === id; })[0]; return m ? m.name : '成員'; }
 function isTemp(id) { var m = V.members.filter(function (x) { return x.id === id; })[0]; return !!(m && m.temp); }
 function canFor(owner) { return V.me === owner || (isTemp(owner) && V.me === V.creator); }
-var CATS = { food: '食・餐飲', cloth: '衣・形象', housing: '住・後勤', transport: '行・移動', leisure: '娛・文化', other_out: '其他' };
+var CATS = { food: '食・餐飲', cloth: '衣・形象', housing: '住・後勤', transport: '行・移動', leisure: '娛・文化', medical: '醫療・保健', loan: '貸款・財務', insurance: '保險・保障', advance: '代墊費用', other_out: '其他' };
 function cat(c) { return CATS[c] || '其他'; }
 var tt;
 function toast(t) { var el = document.getElementById('toast'); el.textContent = t; el.hidden = false; clearTimeout(tt); tt = setTimeout(function () { el.hidden = true; }, 2800); }
